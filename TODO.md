@@ -30,15 +30,15 @@ roadmap; this file is the more operational backlog.
 
 ## M1: Torch Single Request
 
-- [ ] Load HF config.
-- [ ] Load `safetensors`.
-- [ ] Implement minimal Llama/Qwen-style block.
-- [ ] Implement full-context forward.
-- [ ] Implement greedy decode.
-- [ ] Implement sampling params.
-- [ ] Add Hugging Face correctness oracle interface.
-- [ ] Compare logits with Hugging Face.
-- [ ] Measure single-request latency.
+- [x] Load HF config.
+- [x] Load `safetensors`.
+- [x] Implement minimal Llama/Qwen-style block.
+- [x] Implement full-context forward.
+- [x] Implement greedy decode.
+- [x] Implement sampling params.
+- [x] Add Hugging Face correctness oracle interface.
+- [x] Compare logits with Hugging Face.
+- [x] Measure single-request latency.
 
 ## M2: KV Cache
 
