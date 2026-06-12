@@ -180,15 +180,15 @@ compute-bound; decode is often more memory-bound.
 
 ### Phase 1: Naive PyTorch Engine
 
-- [ ] Load `Qwen/Qwen3.5-4B` from `safetensors`.
-- [ ] Implement tokenizer wrapper.
-- [ ] Implement PyTorch forward.
-- [ ] Implement greedy decoding.
-- [ ] Implement temperature/top-k/top-p sampling.
-- [ ] Add streaming output callback.
-- [ ] Add Hugging Face correctness oracle interface.
-- [ ] Validate logits against Hugging Face.
-- [ ] Benchmark single-request TTFT/TPOT/E2E.
+- [x] Load `Qwen/Qwen3.5-4B` from `safetensors`.
+- [x] Implement tokenizer wrapper.
+- [x] Implement PyTorch forward.
+- [x] Implement greedy decoding.
+- [x] Implement temperature/top-k/top-p sampling.
+- [x] Add streaming output callback.
+- [x] Add Hugging Face correctness oracle interface.
+- [x] Validate logits against Hugging Face.
+- [x] Benchmark single-request TTFT/TPOT/E2E.
 
 ### Phase 2: KV Cache
 

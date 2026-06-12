@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from nano_serve import Engine, EngineConfig, FeatureFlags, SamplingParams
@@ -9,11 +10,13 @@ from nano_serve.assets import (
     MODEL_PATH_ENV,
     AssetConfig,
     env_template,
+    load_dotenv,
 )
 from nano_serve.kv_cache.paged import PagedKVCache
 from nano_serve.observability import platform_event
 from nano_serve.platform import detect_platform
 from nano_serve.sampling.greedy import GreedySampler
+from nano_serve.sampling.topk_topp import TopKTopPSampler
 
 
 def test_public_imports() -> None:
@@ -30,6 +33,34 @@ def test_greedy_sampler() -> None:
     token_id = GreedySampler().sample([0.1, 3.0, 2.0], SamplingParams())
 
     assert token_id == 1
+
+
+def test_top_k_top_p_sampler_masks_candidates() -> None:
+    import torch
+
+    generator = torch.Generator().manual_seed(0)
+    sampler = TopKTopPSampler(generator=generator)
+
+    token_id = sampler.sample(
+        torch.tensor([10.0, 9.0, 0.0]),
+        SamplingParams(temperature=1.0, top_k=1),
+    )
+
+    assert token_id == 0
+
+
+def test_top_p_sampler_keeps_probability_prefix() -> None:
+    import torch
+
+    generator = torch.Generator().manual_seed(0)
+    sampler = TopKTopPSampler(generator=generator)
+
+    token_id = sampler.sample(
+        torch.tensor([10.0, 9.0, 1.0]),
+        SamplingParams(temperature=1.0, top_p=0.8),
+    )
+
+    assert token_id in {0, 1}
 
 
 def test_paged_kv_allocator_smoke() -> None:
@@ -77,8 +108,8 @@ def test_bilingual_readmes_exist() -> None:
 
     assert (root / "README.md").exists()
     assert (root / "README.zh.md").exists()
-    assert "README.zh.md" in (root / "README.md").read_text()
-    assert "README.md" in (root / "README.zh.md").read_text()
+    assert "README.zh.md" in (root / "README.md").read_text(encoding="utf-8")
+    assert "README.md" in (root / "README.zh.md").read_text(encoding="utf-8")
 
 
 def test_asset_env_template_mentions_required_paths() -> None:
@@ -103,6 +134,29 @@ def test_asset_config_and_engine_config_read_env(monkeypatch) -> None:
     assert engine_config.model_id == DEFAULT_MODEL_ID
     assert engine_config.model_path == "/tmp/nano-serve/model"
     assert engine_config.dataset_path == "/tmp/nano-serve/sharegpt.json"
+
+
+def test_load_dotenv_sets_missing_values(tmp_path: Path, monkeypatch) -> None:
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "\n".join(
+            [
+                "NANO_SERVE_MODEL_PATH=relative/model",
+                "NANO_SERVE_DATASET_PATH='relative/sharegpt.json'",
+                "NANO_SERVE_MODEL_ID=ignored",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv(MODEL_PATH_ENV, raising=False)
+    monkeypatch.delenv(DATASET_PATH_ENV, raising=False)
+    monkeypatch.setenv("NANO_SERVE_MODEL_ID", "already-set")
+
+    load_dotenv(dotenv)
+
+    assert os.environ[MODEL_PATH_ENV] == "relative/model"
+    assert os.environ[DATASET_PATH_ENV] == "relative/sharegpt.json"
+    assert os.environ["NANO_SERVE_MODEL_ID"] == "already-set"
 
 
 def test_platform_detection_without_torch() -> None:

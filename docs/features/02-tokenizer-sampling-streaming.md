@@ -39,6 +39,16 @@ timestamps.
 - stop token behavior,
 - streaming event order.
 
+## Current Implementation Slice
+
+The Phase 1 offline path includes a text-only tokenizer wrapper, greedy
+sampling, temperature/top-k/top-p sampling, and a token stream callback on
+`Engine.generate()`. Streaming callbacks are emitted after each token is sampled
+and before stop-condition handling exits the decode loop.
+
+This slice is still single-request and offline-only. HTTP streaming and
+multi-request streaming order are left for the API and scheduler milestones.
+
 ## Benchmarks
 
 - sampling overhead under small logits,

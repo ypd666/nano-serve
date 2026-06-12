@@ -47,6 +47,7 @@ None.
 - report and comparison rendering,
 - import smoke test,
 - environment variable parsing for local asset paths,
+- repo-local `.env` loading for local asset paths,
 - dataset fixture loading,
 - Phase 0 smoke artifact generation,
 - gitignore check for repo-local model and dataset paths,
@@ -68,6 +69,8 @@ should work before the engine works.
   local asset environment variables.
 - `NANO_SERVE_MODEL_PATH` and `NANO_SERVE_DATASET_PATH` point to gitignored
   local paths before downloading.
+- Repo-local `.env` is ignored by git and can provide the same asset
+  environment variables for local CLI runs.
 - Core Phase 0 commands run on macOS Apple Silicon without CUDA by using CPU.
 - CUDA-specific paths are optional and reserved for Linux NVIDIA H20/H100
   benchmark/profiling runs.

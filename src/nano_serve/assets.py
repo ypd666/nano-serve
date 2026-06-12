@@ -39,6 +39,7 @@ class AssetConfig:
 
     @classmethod
     def from_env(cls) -> "AssetConfig":
+        load_dotenv()
         return cls(
             model_path=_required_path_env(MODEL_PATH_ENV),
             dataset_path=_required_path_env(DATASET_PATH_ENV),
@@ -129,8 +130,34 @@ def download_serving_dataset(config: AssetConfig, *, force: bool = False) -> Pat
 
 
 def ensure_asset_paths_gitignored(config: AssetConfig) -> None:
-    for kind, path in (("model", config.model_path), ("dataset", config.dataset_path)):
+    assets: tuple[tuple[AssetKind, Path], ...] = (
+        ("model", config.model_path),
+        ("dataset", config.dataset_path),
+    )
+    for kind, path in assets:
         ensure_gitignored(path, kind=kind)
+
+
+def load_dotenv(path: Path | None = None, *, override: bool = False) -> None:
+    dotenv_path = path or (_git_repo_root() or Path.cwd()) / ".env"
+    if not dotenv_path.exists():
+        return
+
+    for raw_line in dotenv_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line.removeprefix("export ").strip()
+        if "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name = name.strip()
+        value = _unquote_env_value(value.strip())
+        if not name:
+            continue
+        if override or name not in os.environ:
+            os.environ[name] = value
 
 
 def ensure_gitignored(path: Path, *, kind: AssetKind) -> None:
@@ -162,6 +189,12 @@ def _required_path_env(name: str) -> Path:
             f"{name} is required. Example:\n\n{env_template()}"
         )
     return _resolve_non_strict(Path(value).expanduser())
+
+
+def _unquote_env_value(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        return value[1:-1]
+    return value
 
 
 def _resolve_non_strict(path: Path) -> Path:

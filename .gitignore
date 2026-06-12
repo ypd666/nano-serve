@@ -5,6 +5,7 @@ __pycache__/
 .mypy_cache/
 .venv/
 venv/
+.env
 dist/
 build/
 *.egg-info/
@@ -13,6 +14,8 @@ reports/
 *.prof
 *.nsys-rep
 *.ncu-rep
+uv.toml
+.python-version
 
 # Large local model and benchmark assets. Use NANO_SERVE_MODEL_PATH and
 # NANO_SERVE_DATASET_PATH to point downloads here or outside the repository.

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from nano_serve.benchmark.compare import compare_runs, render_compare_markdown
 from nano_serve.benchmark.datasets import load_sharegpt_dataset
+from nano_serve.benchmark.offline import OfflineBenchmarkConfig, run_offline_benchmark
 from nano_serve.benchmark.phase0 import Phase0SmokeConfig, run_phase0_smoke
 from nano_serve.cli import main
 from nano_serve.observability import Event, JSONLEventWriter, read_jsonl_events
@@ -91,6 +92,50 @@ def test_phase0_smoke_writes_artifacts(tmp_path: Path, monkeypatch) -> None:
     ]
 
 
+def test_phase1_offline_benchmark_writes_artifacts(tmp_path: Path, monkeypatch) -> None:
+    model_path = _write_fake_model(tmp_path / "model")
+    dataset_path = _write_fake_dataset(tmp_path / "sharegpt.json")
+    output_dir = tmp_path / "phase1-runs"
+    monkeypatch.setenv("NANO_SERVE_MODEL_PATH", str(model_path))
+    monkeypatch.setenv("NANO_SERVE_DATASET_PATH", str(dataset_path))
+    monkeypatch.setattr("nano_serve.benchmark.offline.TokenizerWrapper", _FakeTokenizer)
+    monkeypatch.setattr("nano_serve.benchmark.offline.Engine", _FakeEngine)
+
+    summary = run_offline_benchmark(
+        OfflineBenchmarkConfig(
+            output_dir=output_dir,
+            num_samples=2,
+            max_new_tokens=3,
+            max_prompt_tokens=4,
+        )
+    )
+
+    assert summary["status"] == "ok"
+    assert summary["phase"] == "phase1"
+    assert summary["samples_loaded"] == 2
+    assert summary["total_output_tokens"] == 4
+    assert summary["output_tokens_per_sec"] is not None
+
+    artifacts = summary["artifacts"]
+    assert isinstance(artifacts, dict)
+    for path in artifacts.values():
+        assert Path(path).exists()
+
+    events = read_jsonl_events(Path(artifacts["events"]))
+    assert [event["name"] for event in events] == [
+        "run_start",
+        "platform_detected",
+        "dataset_load_end",
+        "stream_token",
+        "stream_token",
+        "request_end",
+        "stream_token",
+        "stream_token",
+        "request_end",
+        "run_end",
+    ]
+
+
 def test_compare_runs(tmp_path: Path) -> None:
     base = _write_summary(tmp_path / "base", "base", samples_loaded=2)
     candidate = _write_summary(tmp_path / "candidate", "candidate", samples_loaded=5)
@@ -162,3 +207,51 @@ def _write_summary(path: Path, run_id: str, *, samples_loaded: int) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+class _FakeTokenizer:
+    eos_token_id = 15
+
+    @classmethod
+    def from_pretrained(cls, model_path: Path) -> "_FakeTokenizer":
+        assert model_path.exists()
+        return cls()
+
+    def encode(self, text: str) -> list[int]:
+        return [ord(char) % 16 for char in text]
+
+
+class _FakeMetrics:
+    ttft_ms = 1.0
+    e2e_ms = 3.0
+
+    def tpot_ms(self, output_tokens: int) -> float | None:
+        return 1.0 if output_tokens > 1 else None
+
+
+class _FakeState:
+    stop_reason = "max_tokens"
+    metrics = _FakeMetrics()
+
+
+class _FakeEngine:
+    def __init__(self, config: object) -> None:
+        del config
+        self.finished: list[_FakeState] = []
+
+    def generate(self, prompt_token_ids: list[int], params: object, stream_callback: object = None) -> list[int]:
+        del prompt_token_ids, params
+        if callable(stream_callback):
+            stream_callback(_FakeStreamEvent(token_id=3, token_index=0))
+            stream_callback(_FakeStreamEvent(token_id=4, token_index=1))
+        self.finished.append(_FakeState())
+        return [3, 4]
+
+
+class _FakeStreamEvent:
+    request_id = "fake-request"
+
+    def __init__(self, *, token_id: int, token_index: int) -> None:
+        self.token_id = token_id
+        self.token_index = token_index
+        self.timestamp_ns = 0

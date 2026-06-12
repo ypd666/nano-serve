@@ -9,6 +9,7 @@ from pathlib import Path
 from nano_serve import __version__
 from nano_serve.assets import download_assets_from_env, env_template
 from nano_serve.benchmark.compare import compare_runs, render_compare_markdown
+from nano_serve.benchmark.offline import OfflineBenchmarkConfig, run_offline_benchmark
 from nano_serve.benchmark.phase0 import Phase0SmokeConfig, run_phase0_smoke
 from nano_serve.engine.config import EngineConfig
 
@@ -60,6 +61,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_phase0_smoke_args(phase0)
     phase0.set_defaults(func=_phase0_smoke)
 
+    phase1 = subcommands.add_parser(
+        "phase1-offline",
+        help="Run the Phase 1 single-request torch offline benchmark.",
+    )
+    _add_phase1_offline_args(phase1)
+    phase1.set_defaults(func=_phase1_offline)
+
     bench = subcommands.add_parser("bench", help="Benchmark helper commands.")
     bench_commands = bench.add_subparsers(dest="bench_command")
     bench_dummy = bench_commands.add_parser(
@@ -68,6 +76,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_phase0_smoke_args(bench_dummy)
     bench_dummy.set_defaults(func=_phase0_smoke)
+    bench_offline = bench_commands.add_parser(
+        "offline",
+        help="Alias for the Phase 1 single-request torch offline benchmark.",
+    )
+    _add_phase1_offline_args(bench_offline)
+    bench_offline.set_defaults(func=_phase1_offline)
     bench_compare = bench_commands.add_parser(
         "compare",
         help="Compare two benchmark run summaries or run directories.",
@@ -112,6 +126,38 @@ def _add_phase0_smoke_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_phase1_offline_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("runs/phase1"),
+        help="directory for run artifacts",
+    )
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=1,
+        help="number of ShareGPT samples to generate",
+    )
+    parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=8,
+        help="maximum generated tokens per request",
+    )
+    parser.add_argument(
+        "--max-prompt-tokens",
+        type=int,
+        default=128,
+        help="truncate prompts to this many tokens",
+    )
+    parser.add_argument(
+        "--workload",
+        default="single_short",
+        help="workload name recorded in artifacts",
+    )
+
+
 def _assets_env(_: argparse.Namespace) -> int:
     print(env_template())
     return 0
@@ -148,6 +194,20 @@ def _phase0_smoke(args: argparse.Namespace) -> int:
             output_dir=args.output_dir,
             num_samples=args.num_samples,
             load_model=args.load_model,
+        )
+    )
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
+def _phase1_offline(args: argparse.Namespace) -> int:
+    summary = run_offline_benchmark(
+        OfflineBenchmarkConfig(
+            output_dir=args.output_dir,
+            num_samples=args.num_samples,
+            max_new_tokens=args.max_new_tokens,
+            max_prompt_tokens=args.max_prompt_tokens,
+            workload=args.workload,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
