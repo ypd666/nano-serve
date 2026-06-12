@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -32,4 +32,4 @@ class SystemMetrics:
     mfu_decode: float | None = None
     sm_active_avg: float | None = None
     hbm_bw_util_avg: float | None = None
-
+    platform: dict[str, object] = field(default_factory=dict)

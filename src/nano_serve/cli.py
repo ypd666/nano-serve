@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 from nano_serve import __version__
+from nano_serve.assets import download_assets_from_env, env_template
+from nano_serve.benchmark.compare import compare_runs, render_compare_markdown
+from nano_serve.benchmark.phase0 import Phase0SmokeConfig, run_phase0_smoke
 from nano_serve.engine.config import EngineConfig
 
 
@@ -18,21 +22,149 @@ def build_parser() -> argparse.ArgumentParser:
 
     subcommands = parser.add_subparsers(dest="command")
 
+    assets = subcommands.add_parser("assets", help="Asset helper commands.")
+    asset_commands = assets.add_subparsers(dest="asset_command")
+    asset_env = asset_commands.add_parser(
+        "env",
+        help="Print the model and dataset environment variable template.",
+    )
+    asset_env.set_defaults(func=_assets_env)
+    asset_download = asset_commands.add_parser(
+        "download",
+        help="Download the configured model and serving dataset assets.",
+    )
+    asset_download.add_argument("--model", action="store_true", help="download only model")
+    asset_download.add_argument(
+        "--dataset",
+        action="store_true",
+        help="download only dataset",
+    )
+    asset_download.add_argument("--force", action="store_true", help="force re-download")
+    asset_download.add_argument(
+        "--skip-gitignore-check",
+        action="store_true",
+        help="do not require repo-local asset paths to be gitignored",
+    )
+    asset_download.set_defaults(func=_assets_download)
+
     show_config = subcommands.add_parser(
         "show-config",
         help="Print the default engine config as JSON.",
     )
     show_config.set_defaults(func=_show_config)
 
-    subcommands.add_parser("bench", help="Benchmark commands are not implemented yet.")
-    subcommands.add_parser("serve", help="Server mode is not implemented yet.")
+    phase0 = subcommands.add_parser(
+        "phase0-smoke",
+        help="Run the Phase 0 local infrastructure smoke.",
+    )
+    _add_phase0_smoke_args(phase0)
+    phase0.set_defaults(func=_phase0_smoke)
+
+    bench = subcommands.add_parser("bench", help="Benchmark helper commands.")
+    bench_commands = bench.add_subparsers(dest="bench_command")
+    bench_dummy = bench_commands.add_parser(
+        "dummy",
+        help="Alias for the Phase 0 deterministic smoke benchmark.",
+    )
+    _add_phase0_smoke_args(bench_dummy)
+    bench_dummy.set_defaults(func=_phase0_smoke)
+    bench_compare = bench_commands.add_parser(
+        "compare",
+        help="Compare two benchmark run summaries or run directories.",
+    )
+    bench_compare.add_argument("base", type=Path, help="base run dir or summary.json")
+    bench_compare.add_argument(
+        "candidate",
+        type=Path,
+        help="candidate run dir or summary.json",
+    )
+    bench_compare.add_argument(
+        "--format",
+        choices=("markdown", "json"),
+        default="markdown",
+        help="output format",
+    )
+    bench_compare.set_defaults(func=_bench_compare)
+
+    serve = subcommands.add_parser("serve", help="Server mode is not implemented yet.")
+    serve.set_defaults(func=_not_implemented)
 
     return parser
+
+
+def _add_phase0_smoke_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("runs/phase0"),
+        help="directory for run artifacts",
+    )
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=8,
+        help="number of ShareGPT samples to load",
+    )
+    parser.add_argument(
+        "--load-model",
+        action="store_true",
+        help="opt into the heavy full model load path",
+    )
+
+
+def _assets_env(_: argparse.Namespace) -> int:
+    print(env_template())
+    return 0
+
+
+def _assets_download(args: argparse.Namespace) -> int:
+    download_model = args.model or not args.dataset
+    download_dataset = args.dataset or not args.model
+    config = download_assets_from_env(
+        force=args.force,
+        model=download_model,
+        dataset=download_dataset,
+        check_gitignore=not args.skip_gitignore_check,
+    )
+    if download_model:
+        print(f"model: {config.model_id} -> {config.model_path}")
+    if download_dataset:
+        print(
+            "dataset: "
+            f"{config.dataset_repo_id}/{config.dataset_filename} -> "
+            f"{config.dataset_path}"
+        )
+    return 0
 
 
 def _show_config(_: argparse.Namespace) -> int:
     print(json.dumps(EngineConfig().to_dict(), indent=2, sort_keys=True))
     return 0
+
+
+def _phase0_smoke(args: argparse.Namespace) -> int:
+    summary = run_phase0_smoke(
+        Phase0SmokeConfig(
+            output_dir=args.output_dir,
+            num_samples=args.num_samples,
+            load_model=args.load_model,
+        )
+    )
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
+def _bench_compare(args: argparse.Namespace) -> int:
+    comparison = compare_runs(args.base, args.candidate)
+    if args.format == "json":
+        print(json.dumps(comparison, indent=2, sort_keys=True))
+    else:
+        print(render_compare_markdown(comparison), end="")
+    return 0
+
+
+def _not_implemented(_: argparse.Namespace) -> int:
+    raise NotImplementedError("Server mode is not implemented yet.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -46,4 +178,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

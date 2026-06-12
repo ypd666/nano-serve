@@ -15,7 +15,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+assets = [
+  "huggingface-hub",
+  "hf-xet",
+]
 torch = [
+  "accelerate",
+  "huggingface-hub",
+  "hf-xet",
   "torch",
   "safetensors",
   "transformers",
@@ -51,4 +58,3 @@ target-version = "py311"
 [tool.mypy]
 python_version = "3.11"
 packages = ["nano_serve"]
-

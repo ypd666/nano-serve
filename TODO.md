@@ -14,16 +14,19 @@ roadmap; this file is the more operational backlog.
 
 ## M0: Infrastructure
 
-- [ ] Define `EngineConfig`.
-- [ ] Define `FeatureFlags`.
-- [ ] Define request and iteration metric schemas.
-- [ ] Implement JSONL event writer.
-- [ ] Implement benchmark workload registry.
-- [ ] Implement report generator.
-- [ ] Implement report comparison.
-- [ ] Add NVTX helper.
-- [ ] Add correctness oracle interface.
-- [ ] Add import smoke tests.
+- [x] Define `EngineConfig`.
+- [x] Define `FeatureFlags`.
+- [x] Define request and iteration metric schemas.
+- [x] Implement JSONL event writer.
+- [x] Implement benchmark workload registry.
+- [x] Implement report generator.
+- [x] Implement report comparison.
+- [x] Add NVTX helper.
+- [x] Add import smoke tests.
+- [x] Add Qwen3.5-4B and ShareGPT asset downloader.
+- [x] Add ShareGPT dataset fixture loading.
+- [x] Add Phase 0 local smoke CLI and artifact generation.
+- [x] Add macOS CPU-only and Linux NVIDIA CUDA platform policy.
 
 ## M1: Torch Single Request
 
@@ -33,6 +36,7 @@ roadmap; this file is the more operational backlog.
 - [ ] Implement full-context forward.
 - [ ] Implement greedy decode.
 - [ ] Implement sampling params.
+- [ ] Add Hugging Face correctness oracle interface.
 - [ ] Compare logits with Hugging Face.
 - [ ] Measure single-request latency.
 
@@ -62,6 +66,8 @@ roadmap; this file is the more operational backlog.
 - [ ] Free finished requests immediately.
 - [ ] Add batch timeline metric.
 - [ ] Benchmark RPS sweep.
+- [ ] Add vLLM and SGLang baseline benchmark scripts once local workloads are
+      comparable.
 
 ## M5-M6: Paged KV and Reference Paged Attention
 
@@ -115,4 +121,3 @@ roadmap; this file is the more operational backlog.
 - [ ] Prometheus metrics.
 - [ ] Request tracing.
 - [ ] Regression benchmark CI.
-

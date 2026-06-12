@@ -23,13 +23,22 @@ called `nano-serve`.
 7. README visuals must stay synchronized across languages. If a README image,
    diagram, caption, or alt text changes in one language, update the other
    README in the same change.
+8. The first model milestone supports only `Qwen/Qwen3.5-4B`. Do not add model
+   zoo support or compatibility branches before the Qwen3.5-4B path is working.
+9. Large local assets must not enter git. Model and serving dataset locations
+   must come from `NANO_SERVE_MODEL_PATH` and `NANO_SERVE_DATASET_PATH`; do not
+   hardcode machine-specific paths in source files.
+10. Shared infrastructure must be macOS Apple Silicon friendly for CPU-only
+    local agent-loop development and must also run on Linux NVIDIA H20/H100 for
+    CUDA benchmarking. Do not require CUDA, TileLang, TensorRT, Triton, or other
+    Linux/NVIDIA-only dependencies in core imports.
 
 ## Current Scope
 
 This repo starts as a skeleton. Prefer narrow, staged implementation:
 
 1. benchmark infrastructure,
-2. torch single-request forwarding,
+2. torch single-request forwarding for `Qwen/Qwen3.5-4B`,
 3. KV cache and prefill/decode split,
 4. static batching,
 5. continuous batching,
@@ -46,6 +55,52 @@ This repo starts as a skeleton. Prefer narrow, staged implementation:
 Do not jump directly to distributed serving, custom GEMM, or AF
 disaggregation before the scheduler, KV cache, benchmark, and metrics layers are
 usable.
+
+## Local Assets
+
+Required environment variables:
+
+- `NANO_SERVE_MODEL_PATH`: local directory for the `Qwen/Qwen3.5-4B` snapshot.
+- `NANO_SERVE_DATASET_PATH`: local JSON path for the ShareGPT serving benchmark
+  dataset.
+
+Optional environment variables:
+
+- `NANO_SERVE_MODEL_ID`: defaults to `Qwen/Qwen3.5-4B`.
+- `NANO_SERVE_DATASET_REPO_ID`: defaults to
+  `anon8231489123/ShareGPT_Vicuna_unfiltered`.
+- `NANO_SERVE_DATASET_FILENAME`: defaults to
+  `ShareGPT_V3_unfiltered_cleaned_split.json`.
+
+Use `PYTHONPATH=src python3 scripts/download_assets.py --print-env-template`
+to print the expected environment variables. Use
+`PYTHONPATH=src python3 scripts/download_assets.py` to download both assets.
+
+If a configured asset path is inside the repo, it must be gitignored before
+download. Preferred repo-local paths are under `.nano-serve/`, `models/`,
+`datasets/`, or `data/`.
+
+## Platform Support
+
+Supported targets:
+
+- macOS Apple Silicon: CPU-only development loop, asset checks, dataset reading,
+  logging, report generation, and non-CUDA smoke tests.
+- Linux NVIDIA H20/H100: CUDA model loading, benchmark/profiling, and later
+  TileLang/custom-kernel work.
+
+Runtime policy:
+
+- Shared code must not import CUDA-only packages unconditionally.
+- Device selection is `cuda` when `torch.cuda.is_available()` is true;
+  otherwise `cpu`.
+- macOS does not need an MPS path. Keep the local development path CPU-friendly.
+- GPU-specific code must be guarded by feature flags and availability checks.
+- TileLang/custom kernels may be Linux/NVIDIA-only, but every feature using them
+  must keep a torch fallback or a clean skip path.
+- Phase 0 logs should include OS, machine, Python version, torch version if
+  installed, detected device backend, CUDA device count/names when available,
+  and whether the runtime is macOS Apple Silicon.
 
 ## Documentation Contract
 
@@ -176,6 +231,9 @@ Required system metrics:
 - prefill/decode MFU,
 - SM Active / SM Activity,
 - HBM bandwidth utilization.
+- platform fields: OS, machine, Python version, torch version if installed,
+  detected device backend, CUDA device count/names when available, and macOS
+  Apple Silicon flag.
 
 ## README Visual Assets
 

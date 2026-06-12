@@ -2,12 +2,15 @@
 
 ## Goal
 
-Run one decoder-only Llama/Qwen-style model with simple PyTorch operations.
+Run `Qwen/Qwen3.5-4B` with simple PyTorch operations.
 
 ## Why It Exists
 
 This is the correctness baseline. It should expose model internals instead of
 calling `transformers.generate()` as a hidden serving engine.
+
+The first milestone intentionally supports only `Qwen/Qwen3.5-4B`. Avoid model
+zoo abstractions until this path is correct and benchmarkable.
 
 ## Dependencies
 
@@ -20,6 +23,7 @@ calling `transformers.generate()` as a hidden serving engine.
 - `TorchModelRunner`
 - `SamplingParams`
 - offline `Engine.generate()`
+- `NANO_SERVE_MODEL_PATH`
 
 ## Metrics
 
@@ -52,4 +56,4 @@ calling `transformers.generate()` as a hidden serving engine.
 ## References
 
 - Hugging Face model config and safetensors formats.
-
+- Qwen/Qwen3.5-4B.

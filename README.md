@@ -23,6 +23,59 @@ Most modules are interfaces, stubs, and design documents. Implementation should
 follow the roadmap below, not jump directly into complex kernels or distributed
 serving.
 
+## Model and Dataset Assets
+
+The first milestone supports exactly one model: `Qwen/Qwen3.5-4B`.
+
+Large model and benchmark files must stay out of git. Point the project to local
+asset paths with environment variables:
+
+```bash
+export NANO_SERVE_MODEL_PATH=$PWD/.nano-serve/models/qwen3.5-4b
+export NANO_SERVE_DATASET_PATH=$PWD/.nano-serve/datasets/sharegpt/ShareGPT_V3_unfiltered_cleaned_split.json
+```
+
+Optional overrides:
+
+```bash
+export NANO_SERVE_MODEL_ID=Qwen/Qwen3.5-4B
+export NANO_SERVE_DATASET_REPO_ID=anon8231489123/ShareGPT_Vicuna_unfiltered
+export NANO_SERVE_DATASET_FILENAME=ShareGPT_V3_unfiltered_cleaned_split.json
+```
+
+Download the assets:
+
+```bash
+PYTHONPATH=src python3 scripts/download_assets.py
+```
+
+Run the Phase 0 local smoke without loading model weights:
+
+```bash
+nano-serve assets env
+nano-serve phase0-smoke --num-samples 8
+nano-serve bench dummy --num-samples 4
+nano-serve bench compare runs/phase0/<base-run-id> runs/phase0/<candidate-run-id>
+```
+
+The recommended `.nano-serve/`, `models/`, `datasets/`, and `data/` directories
+are gitignored. The downloader also checks repo-local paths before downloading
+so large assets do not get accidentally committed.
+
+## Platform Support
+
+`nano-serve` is designed for two execution environments:
+
+- macOS Apple Silicon: CPU-only local agent-loop development, asset checks,
+  dataset reading, logging, report generation, and non-CUDA smoke tests.
+- Linux NVIDIA H20/H100: CUDA model loading, benchmark/profiling, and later
+  TileLang/custom-kernel work.
+
+Shared infrastructure must not require CUDA-only packages. Runtime device
+selection is `cuda` when `torch.cuda.is_available()` is true; otherwise it is
+`cpu`. macOS does not need an MPS path. TileLang/custom kernels may be
+Linux/NVIDIA-only, but they must keep a torch fallback or a clean skip path.
+
 ## Architecture Sketch
 
 ```mermaid
@@ -49,7 +102,7 @@ flowchart LR
   feature.
 - Start with simple PyTorch kernels, then replace bottlenecks with TileLang
   kernels.
-- Support one small Llama/Qwen-style decoder-only model first.
+- Support only `Qwen/Qwen3.5-4B` in the first milestone.
 - Use Hugging Face as the correctness oracle, not as the hidden engine.
 - Prefer understanding and ablation over premature performance chasing.
 - Compare against vLLM, SGLang, TensorRT-LLM, and TileRT only when the local
@@ -98,6 +151,8 @@ System-level metrics:
 - prefix cache hit tokens and hit rate.
 - speculative decoding acceptance length and target calls per output token.
 - prefill/decode MFU, SM Active / SM Activity, HBM bandwidth utilization.
+- platform fields: OS, machine, Python version, torch version if installed,
+  detected device backend, and CUDA device info when available.
 
 The default TPOT formula is:
 
@@ -112,23 +167,26 @@ compute-bound; decode is often more memory-bound.
 
 ### Phase 0: Infrastructure
 
-- [ ] Config system and feature flags.
-- [ ] JSONL event logger.
-- [ ] Request-level and iteration-level metrics.
-- [ ] Benchmark report generator.
-- [ ] Benchmark comparison tool.
-- [ ] NVTX range helper.
-- [ ] Hugging Face correctness oracle.
-- [ ] vLLM and SGLang baseline benchmark scripts.
+- [x] Config system and feature flags.
+- [x] JSONL event logger.
+- [x] Request-level and iteration-level metrics.
+- [x] Benchmark report generator.
+- [x] Benchmark comparison tool.
+- [x] NVTX range helper.
+- [x] Qwen3.5-4B and ShareGPT asset downloader.
+- [x] ShareGPT dataset loading fixture.
+- [x] Phase 0 local smoke CLI and benchmark artifacts.
+- [x] macOS CPU-only and Linux NVIDIA CUDA platform policy.
 
 ### Phase 1: Naive PyTorch Engine
 
-- [ ] Load one Llama/Qwen-style model from `safetensors`.
+- [ ] Load `Qwen/Qwen3.5-4B` from `safetensors`.
 - [ ] Implement tokenizer wrapper.
 - [ ] Implement PyTorch forward.
 - [ ] Implement greedy decoding.
 - [ ] Implement temperature/top-k/top-p sampling.
 - [ ] Add streaming output callback.
+- [ ] Add Hugging Face correctness oracle interface.
 - [ ] Validate logits against Hugging Face.
 - [ ] Benchmark single-request TTFT/TPOT/E2E.
 
@@ -163,6 +221,8 @@ compute-bound; decode is often more memory-bound.
 - [ ] Allow finished requests to leave immediately.
 - [ ] Add decode-first and prefill-first policies.
 - [ ] Benchmark static batching vs continuous batching.
+- [ ] Add vLLM and SGLang baseline benchmark scripts once the local engine can
+      run comparable workloads.
 
 ### Phase 5: Paged KV Cache
 

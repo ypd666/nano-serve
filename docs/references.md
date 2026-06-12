@@ -4,6 +4,8 @@ This list is intentionally focused on primary project docs and papers.
 
 ## Systems and Documentation
 
+- Qwen3.5-4B model: https://huggingface.co/Qwen/Qwen3.5-4B
+- ShareGPT serving dataset file: https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/blob/main/ShareGPT_V3_unfiltered_cleaned_split.json
 - vLLM docs: https://docs.vllm.ai/
 - vLLM metrics: https://docs.vllm.ai/en/latest/design/metrics/
 - SGLang docs: https://docs.sglang.io/

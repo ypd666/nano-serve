@@ -6,8 +6,11 @@ feature is explicit and easy to serialize into benchmark artifacts.
 
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass, field
 from typing import Literal
+
+from nano_serve.assets import DATASET_PATH_ENV, DEFAULT_MODEL_ID, MODEL_PATH_ENV
 
 
 SchedulerKind = Literal["single", "static_batch", "continuous", "chunked_prefill"]
@@ -42,6 +45,11 @@ class BenchmarkConfig:
 
 @dataclass(frozen=True)
 class EngineConfig:
+    model_id: str = DEFAULT_MODEL_ID
+    model_path: str | None = field(default_factory=lambda: os.environ.get(MODEL_PATH_ENV))
+    dataset_path: str | None = field(
+        default_factory=lambda: os.environ.get(DATASET_PATH_ENV)
+    )
     scheduler: SchedulerKind = "single"
     kv_cache: KVCacheKind = "none"
     attention_backend: AttentionBackendKind = "torch_naive"
@@ -57,4 +65,3 @@ class EngineConfig:
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
-

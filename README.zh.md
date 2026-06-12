@@ -22,6 +22,58 @@ Attention-FFN disaggregation。
 和设计文档。后续实现应该严格跟随下面的 roadmap，不要直接跳到复杂 kernel
 或分布式 serving。
 
+## 模型和数据集资产
+
+第一阶段只支持一个模型：`Qwen/Qwen3.5-4B`。
+
+模型和 benchmark 数据集都很大，不能进 git。用环境变量告诉项目本地资产路径：
+
+```bash
+export NANO_SERVE_MODEL_PATH=$PWD/.nano-serve/models/qwen3.5-4b
+export NANO_SERVE_DATASET_PATH=$PWD/.nano-serve/datasets/sharegpt/ShareGPT_V3_unfiltered_cleaned_split.json
+```
+
+可选覆盖项：
+
+```bash
+export NANO_SERVE_MODEL_ID=Qwen/Qwen3.5-4B
+export NANO_SERVE_DATASET_REPO_ID=anon8231489123/ShareGPT_Vicuna_unfiltered
+export NANO_SERVE_DATASET_FILENAME=ShareGPT_V3_unfiltered_cleaned_split.json
+```
+
+下载资产：
+
+```bash
+PYTHONPATH=src python3 scripts/download_assets.py
+```
+
+运行不加载模型权重的 Phase 0 本地 smoke：
+
+```bash
+nano-serve assets env
+nano-serve phase0-smoke --num-samples 8
+nano-serve bench dummy --num-samples 4
+nano-serve bench compare runs/phase0/<base-run-id> runs/phase0/<candidate-run-id>
+```
+
+推荐使用的 `.nano-serve/`、`models/`、`datasets/`、`data/` 目录都已经
+gitignore。下载脚本也会在下载前检查仓库内路径是否被 git ignore，避免大文件
+被误提交。
+
+## 平台支持
+
+`nano-serve` 面向两个运行环境：
+
+- macOS Apple Silicon：CPU-only 本地 agent loop 开发、资产检查、数据集读取、
+  日志、报告生成和非 CUDA smoke test。
+- Linux NVIDIA H20/H100：CUDA 模型加载、benchmark/profiling，以及后续
+  TileLang/custom-kernel 工作。
+
+共享基础设施不能强依赖 CUDA-only 包。运行时设备选择规则是：当
+`torch.cuda.is_available()` 为 true 时使用 `cuda`，否则使用 `cpu`。macOS
+不需要 MPS 路径。TileLang/custom kernel 可以是 Linux/NVIDIA-only，但必须保留
+torch fallback 或干净的 skip path。
+
 ## 架构草图
 
 ```mermaid
@@ -47,7 +99,7 @@ flowchart LR
 - 每个 feature 都要有 correctness test、microbenchmark 和 end-to-end
   benchmark。
 - 先用简单 PyTorch kernel，再把明确的瓶颈逐步替换成 TileLang kernel。
-- 第一阶段只支持一个小的 Llama/Qwen-style decoder-only model。
+- 第一阶段只支持 `Qwen/Qwen3.5-4B`。
 - 用 Hugging Face 做 correctness oracle，不把它当作隐藏的 serving engine。
 - 优先理解和 ablation，不急着追求性能数字。
 - 只有当本地 milestone 足够成熟时，再和 vLLM、SGLang、TensorRT-LLM、
@@ -96,6 +148,8 @@ System-level metrics：
 - prefix cache hit tokens 和 hit rate。
 - speculative decoding acceptance length 和 target calls per output token。
 - prefill/decode MFU、SM Active / SM Activity、HBM bandwidth utilization。
+- 平台字段：OS、machine、Python version、torch version（如果已安装）、
+  detected device backend，以及可用时的 CUDA device 信息。
 
 默认 TPOT 公式：
 
@@ -110,23 +164,26 @@ memory-bound。
 
 ### Phase 0: Infrastructure
 
-- [ ] Config system and feature flags.
-- [ ] JSONL event logger.
-- [ ] Request-level and iteration-level metrics.
-- [ ] Benchmark report generator.
-- [ ] Benchmark comparison tool.
-- [ ] NVTX range helper.
-- [ ] Hugging Face correctness oracle.
-- [ ] vLLM and SGLang baseline benchmark scripts.
+- [x] Config system and feature flags.
+- [x] JSONL event logger.
+- [x] Request-level and iteration-level metrics.
+- [x] Benchmark report generator.
+- [x] Benchmark comparison tool.
+- [x] NVTX range helper.
+- [x] Qwen3.5-4B and ShareGPT asset downloader.
+- [x] ShareGPT dataset loading fixture.
+- [x] Phase 0 local smoke CLI and benchmark artifacts.
+- [x] macOS CPU-only and Linux NVIDIA CUDA platform policy.
 
 ### Phase 1: Naive PyTorch Engine
 
-- [ ] Load one Llama/Qwen-style model from `safetensors`.
+- [ ] Load `Qwen/Qwen3.5-4B` from `safetensors`.
 - [ ] Implement tokenizer wrapper.
 - [ ] Implement PyTorch forward.
 - [ ] Implement greedy decoding.
 - [ ] Implement temperature/top-k/top-p sampling.
 - [ ] Add streaming output callback.
+- [ ] Add Hugging Face correctness oracle interface.
 - [ ] Validate logits against Hugging Face.
 - [ ] Benchmark single-request TTFT/TPOT/E2E.
 
@@ -161,6 +218,8 @@ memory-bound。
 - [ ] Allow finished requests to leave immediately.
 - [ ] Add decode-first and prefill-first policies.
 - [ ] Benchmark static batching vs continuous batching.
+- [ ] Add vLLM and SGLang baseline benchmark scripts once the local engine can
+      run comparable workloads.
 
 ### Phase 5: Paged KV Cache
 

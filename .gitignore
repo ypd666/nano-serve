@@ -14,3 +14,17 @@ reports/
 *.nsys-rep
 *.ncu-rep
 
+# Large local model and benchmark assets. Use NANO_SERVE_MODEL_PATH and
+# NANO_SERVE_DATASET_PATH to point downloads here or outside the repository.
+.nano-serve/
+models/
+datasets/
+data/
+*.safetensors
+*.gguf
+*.bin
+*.pt
+*.pth
+*.onnx
+*.arrow
+*.parquet
