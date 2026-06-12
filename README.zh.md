@@ -189,7 +189,7 @@ memory-bound。
 
 ### Phase 2: KV Cache
 
-- [ ] Split execution into prefill and decode.
+- [x] Split execution into prefill and decode.
 - [ ] Implement contiguous KV cache.
 - [ ] Implement per-layer K/V cache tensors.
 - [ ] Implement RoPE position handling for cached decode.

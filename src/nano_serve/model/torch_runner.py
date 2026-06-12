@@ -11,6 +11,18 @@ from nano_serve.model.runner import ModelOutput
 
 
 @dataclass
+class PrefillOutput:
+    logits: Any
+    metadata: dict[str, Any]
+
+
+@dataclass
+class DecodeOutput:
+    logits: Any
+    metadata: dict[str, Any]
+
+
+@dataclass
 class TorchModelRunner:
     model: Any
 
@@ -49,4 +61,29 @@ class TorchModelRunner:
         input_ids = torch.tensor([token_ids], dtype=torch.long, device=self.model.device)
         with torch.inference_mode():
             return self.model.next_token_logits(input_ids)
+
+    def prefill(self, prompt_token_ids: list[int]) -> PrefillOutput:
+        logits = self.next_token_logits(prompt_token_ids)
+        return PrefillOutput(
+            logits=logits,
+            metadata={
+                "phase": "prefill",
+                "input_tokens": len(prompt_token_ids),
+                "runner": "torch_full_context",
+                "kv_cache": "none",
+            },
+        )
+
+    def decode(self, context_token_ids: list[int], *, new_token_id: int | None = None) -> DecodeOutput:
+        logits = self.next_token_logits(context_token_ids)
+        return DecodeOutput(
+            logits=logits,
+            metadata={
+                "phase": "decode",
+                "context_tokens": len(context_token_ids),
+                "new_token_id": new_token_id,
+                "runner": "torch_full_context",
+                "kv_cache": "none",
+            },
+        )
 

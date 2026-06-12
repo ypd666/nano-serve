@@ -41,14 +41,18 @@ prefix cache, and PD disaggregation.
 
 ## Current Implementation Slice
 
-The first preparatory slice separates phase callbacks from token stream
-callbacks while generation still uses Phase 1 full-context forwarding.
-`Engine.generate()` can emit `prefill_start`, `prefill_end`,
-`decode_step_start`, and `decode_step_end` phase events independently from
-sampled-token stream events.
+The first Phase 2 slice splits the no-cache generation loop into explicit
+`prefill` and `decode` runner calls. Prefill computes the first next-token logits
+from the prompt. Decode computes later next-token logits from the full prompt
+plus generated tokens.
 
-This is a metrics semantics change only. Decode still re-runs the full prompt
-plus generated tokens and does not yet consume a KV cache.
+`Engine.generate()` now emits phase callbacks separately from token stream
+callbacks. Phase events mark `prefill_start`, `prefill_end`,
+`decode_step_start`, and `decode_step_end`; stream events only mean a sampled
+token was emitted.
+
+This is an interface and metrics split only. Decode still uses full-context
+forwarding and does not yet consume a KV cache.
 
 ## Benchmarks
 

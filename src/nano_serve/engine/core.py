@@ -102,7 +102,6 @@ class Engine:
         runner = self._model_runner()
         generated: list[int] = []
         for decode_index in range(state.max_new_tokens):
-            context_token_ids = [*state.prompt_token_ids, *generated]
             if decode_index == 0:
                 self._emit_phase(
                     phase_callback,
@@ -112,18 +111,7 @@ class Engine:
                     token_index=None,
                     num_tokens=len(state.prompt_token_ids),
                 )
-            else:
-                self._emit_phase(
-                    phase_callback,
-                    state,
-                    phase="decode",
-                    event="start",
-                    token_index=decode_index,
-                    num_tokens=len(context_token_ids),
-                )
-
-            logits = runner.next_token_logits(context_token_ids)
-            if decode_index == 0:
+                prefill_output = runner.prefill(state.prompt_token_ids)
                 now_ns = time.monotonic_ns()
                 state.metrics.prefill_end_time_ns = now_ns
                 state.metrics.first_token_time_ns = now_ns
@@ -136,8 +124,22 @@ class Engine:
                     timestamp_ns=now_ns,
                     num_tokens=len(state.prompt_token_ids),
                 )
+                logits = prefill_output.logits
                 state.status = RequestStatus.DECODE
             else:
+                context_token_ids = [*state.prompt_token_ids, *generated]
+                self._emit_phase(
+                    phase_callback,
+                    state,
+                    phase="decode",
+                    event="start",
+                    token_index=decode_index,
+                    num_tokens=len(context_token_ids),
+                )
+                decode_output = runner.decode(
+                    context_token_ids,
+                    new_token_id=generated[-1],
+                )
                 self._emit_phase(
                     phase_callback,
                     state,
@@ -146,6 +148,7 @@ class Engine:
                     token_index=decode_index,
                     num_tokens=len(context_token_ids),
                 )
+                logits = decode_output.logits
 
             next_token_id = self._sample(logits[0], params)
             generated.append(next_token_id)

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from nano_serve.assets import load_dotenv
 from nano_serve.engine import Engine, EngineConfig
 from nano_serve.engine.batch import BatchKind, BatchPlan
 from nano_serve.model import HuggingFaceOracle, TokenizerWrapper
@@ -66,7 +67,11 @@ def test_engine_generate_uses_full_context_greedy_runner() -> None:
     assert state.stop_reason == "eos_token"
     assert state.metrics.ttft_ms is not None
     assert state.metrics.e2e_ms is not None
-    assert engine.model_runner.contexts == [[1, 2, 3], [1, 2, 3, 7], [1, 2, 3, 7, 8]]
+    assert engine.model_runner.calls == [
+        ("prefill", [1, 2, 3]),
+        ("decode", [1, 2, 3, 7]),
+        ("decode", [1, 2, 3, 7, 8]),
+    ]
 
 
 def test_engine_generate_uses_top_k_sampler_when_requested() -> None:
@@ -168,6 +173,7 @@ def test_engine_generate_with_real_qwen35_smoke() -> None:
 
 
 def _model_path_or_skip() -> Path:
+    load_dotenv()
     value = os.environ.get("NANO_SERVE_MODEL_PATH")
     if not value:
         pytest.skip("NANO_SERVE_MODEL_PATH is not set")
@@ -200,16 +206,24 @@ def _assert_close_logits(actual, expected) -> None:
 class _FakeRunner:
     def __init__(self, token_ids: list[int]) -> None:
         self.token_ids = token_ids
-        self.contexts: list[list[int]] = []
+        self.calls: list[tuple[str, list[int]]] = []
 
     def next_token_logits(self, token_ids: list[int]):
         import torch
 
-        self.contexts.append(list(token_ids))
-        next_token_id = self.token_ids[len(self.contexts) - 1]
+        next_token_id = self.token_ids[len(self.calls) - 1]
         logits = torch.full((1, 16), -1000.0)
         logits[0, next_token_id] = 1000.0
         return logits
+
+    def prefill(self, prompt_token_ids: list[int]):
+        self.calls.append(("prefill", list(prompt_token_ids)))
+        return _FakeRunnerOutput(self.next_token_logits(prompt_token_ids))
+
+    def decode(self, context_token_ids: list[int], *, new_token_id: int | None = None):
+        del new_token_id
+        self.calls.append(("decode", list(context_token_ids)))
+        return _FakeRunnerOutput(self.next_token_logits(context_token_ids))
 
 
 class _FixedLogitsRunner:
@@ -224,3 +238,15 @@ class _FixedLogitsRunner:
         logits = torch.tensor([self.logits[self.index]])
         self.index += 1
         return logits
+
+    def prefill(self, prompt_token_ids: list[int]):
+        return _FakeRunnerOutput(self.next_token_logits(prompt_token_ids))
+
+    def decode(self, context_token_ids: list[int], *, new_token_id: int | None = None):
+        del new_token_id
+        return _FakeRunnerOutput(self.next_token_logits(context_token_ids))
+
+
+class _FakeRunnerOutput:
+    def __init__(self, logits: object) -> None:
+        self.logits = logits
