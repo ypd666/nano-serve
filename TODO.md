@@ -42,7 +42,7 @@ roadmap; this file is the more operational backlog.
 
 ## M2: KV Cache
 
-- [ ] Split prefill and decode.
+- [x] Split prefill and decode.
 - [ ] Implement contiguous KV layout.
 - [ ] Track per-request sequence length.
 - [ ] Validate RoPE position handling.
