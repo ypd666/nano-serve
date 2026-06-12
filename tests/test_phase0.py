@@ -126,10 +126,18 @@ def test_phase1_offline_benchmark_writes_artifacts(tmp_path: Path, monkeypatch) 
         "run_start",
         "platform_detected",
         "dataset_load_end",
+        "prefill_start",
+        "prefill_end",
         "stream_token",
+        "decode_step_start",
+        "decode_step_end",
         "stream_token",
         "request_end",
+        "prefill_start",
+        "prefill_end",
         "stream_token",
+        "decode_step_start",
+        "decode_step_end",
         "stream_token",
         "request_end",
         "run_end",
@@ -239,10 +247,23 @@ class _FakeEngine:
         del config
         self.finished: list[_FakeState] = []
 
-    def generate(self, prompt_token_ids: list[int], params: object, stream_callback: object = None) -> list[int]:
+    def generate(
+        self,
+        prompt_token_ids: list[int],
+        params: object,
+        stream_callback: object = None,
+        phase_callback: object = None,
+    ) -> list[int]:
         del prompt_token_ids, params
+        if callable(phase_callback):
+            phase_callback(_FakePhaseEvent(phase="prefill", event="start", token_index=None))
+            phase_callback(_FakePhaseEvent(phase="prefill", event="end", token_index=None))
         if callable(stream_callback):
             stream_callback(_FakeStreamEvent(token_id=3, token_index=0))
+        if callable(phase_callback):
+            phase_callback(_FakePhaseEvent(phase="decode", event="start", token_index=1))
+            phase_callback(_FakePhaseEvent(phase="decode", event="end", token_index=1))
+        if callable(stream_callback):
             stream_callback(_FakeStreamEvent(token_id=4, token_index=1))
         self.finished.append(_FakeState())
         return [3, 4]
@@ -253,5 +274,16 @@ class _FakeStreamEvent:
 
     def __init__(self, *, token_id: int, token_index: int) -> None:
         self.token_id = token_id
+        self.token_index = token_index
+        self.timestamp_ns = 0
+
+
+class _FakePhaseEvent:
+    request_id = "fake-request"
+    num_tokens = 1
+
+    def __init__(self, *, phase: str, event: str, token_index: int | None) -> None:
+        self.phase = phase
+        self.event = event
         self.token_index = token_index
         self.timestamp_ns = 0

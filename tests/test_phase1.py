@@ -40,16 +40,26 @@ def test_engine_generate_uses_full_context_greedy_runner() -> None:
     engine = Engine(EngineConfig(model_path="unused"))
     engine.model_runner = _FakeRunner([7, 8, 9])
     stream_events = []
+    phase_events = []
 
     output_token_ids = engine.generate(
         [1, 2, 3],
         SamplingParams(max_tokens=3, stop_token_ids=(9,)),
         stream_events.append,
+        phase_events.append,
     )
 
     assert output_token_ids == [7, 8, 9]
     assert [event.token_id for event in stream_events] == [7, 8, 9]
     assert [event.token_index for event in stream_events] == [0, 1, 2]
+    assert [(event.phase, event.event, event.token_index) for event in phase_events] == [
+        ("prefill", "start", None),
+        ("prefill", "end", None),
+        ("decode", "start", 1),
+        ("decode", "end", 1),
+        ("decode", "start", 2),
+        ("decode", "end", 2),
+    ]
     assert len(engine.finished) == 1
     state = engine.finished[0]
     assert state.output_token_ids == [7, 8, 9]

@@ -24,7 +24,18 @@ class StreamEvent:
     timestamp_ns: int
 
 
+@dataclass(frozen=True)
+class PhaseEvent:
+    request_id: str
+    phase: str
+    event: str
+    token_index: int | None
+    timestamp_ns: int
+    num_tokens: int | None = None
+
+
 StreamCallback = Callable[[StreamEvent], None]
+PhaseCallback = Callable[[PhaseEvent], None]
 
 
 class Engine:
@@ -69,6 +80,7 @@ class Engine:
         prompt_token_ids: list[int],
         sampling_params: SamplingParams | None = None,
         stream_callback: StreamCallback | None = None,
+        phase_callback: PhaseCallback | None = None,
     ) -> list[int]:
         """Generate one request with full-context decoding.
 
@@ -91,11 +103,49 @@ class Engine:
         generated: list[int] = []
         for decode_index in range(state.max_new_tokens):
             context_token_ids = [*state.prompt_token_ids, *generated]
+            if decode_index == 0:
+                self._emit_phase(
+                    phase_callback,
+                    state,
+                    phase="prefill",
+                    event="start",
+                    token_index=None,
+                    num_tokens=len(state.prompt_token_ids),
+                )
+            else:
+                self._emit_phase(
+                    phase_callback,
+                    state,
+                    phase="decode",
+                    event="start",
+                    token_index=decode_index,
+                    num_tokens=len(context_token_ids),
+                )
+
             logits = runner.next_token_logits(context_token_ids)
             if decode_index == 0:
                 now_ns = time.monotonic_ns()
                 state.metrics.prefill_end_time_ns = now_ns
                 state.metrics.first_token_time_ns = now_ns
+                self._emit_phase(
+                    phase_callback,
+                    state,
+                    phase="prefill",
+                    event="end",
+                    token_index=None,
+                    timestamp_ns=now_ns,
+                    num_tokens=len(state.prompt_token_ids),
+                )
+                state.status = RequestStatus.DECODE
+            else:
+                self._emit_phase(
+                    phase_callback,
+                    state,
+                    phase="decode",
+                    event="end",
+                    token_index=decode_index,
+                    num_tokens=len(context_token_ids),
+                )
 
             next_token_id = self._sample(logits[0], params)
             generated.append(next_token_id)
@@ -126,6 +176,30 @@ class Engine:
         if state.request_id != request_id:
             raise RuntimeError("Generated request state mismatch.")
         return generated
+
+    def _emit_phase(
+        self,
+        callback: PhaseCallback | None,
+        state: RequestState,
+        *,
+        phase: str,
+        event: str,
+        token_index: int | None,
+        timestamp_ns: int | None = None,
+        num_tokens: int | None = None,
+    ) -> None:
+        if callback is None:
+            return
+        callback(
+            PhaseEvent(
+                request_id=state.request_id,
+                phase=phase,
+                event=event,
+                token_index=token_index,
+                timestamp_ns=timestamp_ns or time.monotonic_ns(),
+                num_tokens=num_tokens,
+            )
+        )
 
     def _sample(self, logits: Any, params: SamplingParams) -> int:
         if params.top_k is None and params.top_p is None and params.temperature == 1.0:

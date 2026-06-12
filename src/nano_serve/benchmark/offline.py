@@ -14,7 +14,7 @@ from nano_serve.assets import AssetConfig
 from nano_serve.benchmark.datasets import load_sharegpt_dataset
 from nano_serve.benchmark.report import write_markdown_report
 from nano_serve.engine.config import EngineConfig
-from nano_serve.engine.core import Engine, StreamEvent
+from nano_serve.engine.core import Engine, PhaseEvent, StreamEvent
 from nano_serve.model.tokenizer import TokenizerWrapper
 from nano_serve.observability import Event, JSONLEventWriter, platform_event
 from nano_serve.platform import detect_platform
@@ -123,6 +123,33 @@ def run_offline_benchmark(config: OfflineBenchmarkConfig) -> dict[str, object]:
             request_start_ns = time.monotonic_ns()
             stream_events: list[StreamEvent] = []
 
+            def phase_callback(event: PhaseEvent) -> None:
+                if event.phase == "prefill":
+                    writer.write(
+                        Event(
+                            f"prefill_{event.event}",
+                            fields={
+                                "request_id": event.request_id,
+                                "sample_id": sample.sample_id,
+                                "num_tokens": event.num_tokens,
+                            },
+                        )
+                    )
+                    return
+
+                if event.phase == "decode":
+                    writer.write(
+                        Event(
+                            f"decode_step_{event.event}",
+                            fields={
+                                "request_id": event.request_id,
+                                "sample_id": sample.sample_id,
+                                "token_index": event.token_index,
+                                "num_tokens": event.num_tokens,
+                            },
+                        )
+                    )
+
             def stream_callback(event: StreamEvent) -> None:
                 stream_events.append(event)
                 writer.write(
@@ -137,7 +164,12 @@ def run_offline_benchmark(config: OfflineBenchmarkConfig) -> dict[str, object]:
                     )
                 )
 
-            output_token_ids = engine.generate(prompt_token_ids, params, stream_callback)
+            output_token_ids = engine.generate(
+                prompt_token_ids,
+                params,
+                stream_callback,
+                phase_callback,
+            )
             request_end_ns = time.monotonic_ns()
             state = engine.finished[before_finished]
             if len(stream_events) != len(output_token_ids):
