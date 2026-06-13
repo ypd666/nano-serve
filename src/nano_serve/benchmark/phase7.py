@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from nano_serve.attention import TilePagedAttention, TorchGatherPagedAttention
+from nano_serve.attention import TorchGatherPagedAttention
 from nano_serve.benchmark.phase6 import _pack_contiguous
 from nano_serve.benchmark.report import write_markdown_report
 from nano_serve.engine.config import EngineConfig
@@ -307,16 +307,48 @@ def _paged_attention_case(
         repeats=config.repeats,
         device=device,
     )
-    use_real_tilelang = check_tilelang_available().available
+    from nano_serve.kernels.tilelang.paged_attention import can_use_tilelang_decode
+
+    use_real_tilelang = can_use_tilelang_decode(
+        query,
+        paged_key,
+        paged_value,
+        block_tables,
+        [config.context_len] * config.batch_size,
+        None,
+    )
     if use_real_tilelang:
+        block_table_tensor = _block_table_tensor(block_tables, device=device)
+        seq_lens_tensor = torch.full(
+            (config.batch_size,),
+            config.context_len,
+            device=device,
+            dtype=torch.int32,
+        )
+        output = torch.empty_like(query)
+        from nano_serve.kernels.tilelang.paged_decode_kernel import cached_paged_decode_kernel
+
+        kernel = cached_paged_decode_kernel(
+            config.batch_size,
+            config.query_heads,
+            config.kv_heads,
+            config.head_dim,
+            config.context_len,
+            config.block_size,
+            block_table_tensor.shape[1],
+            paged_key.shape[0],
+        )
+
         def actual_fn():
-            return TilePagedAttention(require_tilelang=True).forward_decode(
+            kernel(
                 query,
                 paged_key,
                 paged_value,
-                block_tables,
-                [config.context_len] * config.batch_size,
-            )[0]
+                block_table_tensor,
+                seq_lens_tensor,
+                output,
+            )
+            return output
 
         backend = "tilelang"
     else:
@@ -349,12 +381,32 @@ def _paged_attention_case(
     }
 
 
+def _block_table_tensor(block_tables: list[list[int]], *, device: Any):
+    import torch
+
+    max_blocks = max(len(block_ids) for block_ids in block_tables)
+    tensor = torch.zeros((len(block_tables), max_blocks), device=device, dtype=torch.int32)
+    for batch_index, block_ids in enumerate(block_tables):
+        tensor[batch_index, : len(block_ids)] = torch.as_tensor(
+            block_ids,
+            device=device,
+            dtype=torch.int32,
+        )
+    return tensor
+
+
 def _time_repeated(fn, *, repeats: int, device: Any) -> tuple[Any, float]:
     if device.type == "cuda":
         import torch
 
         torch.cuda.synchronize()
     result = None
+    for _ in range(min(3, repeats)):
+        result = fn()
+    if device.type == "cuda":
+        import torch
+
+        torch.cuda.synchronize()
     start_ns = time.monotonic_ns()
     for _ in range(repeats):
         result = fn()
