@@ -216,6 +216,26 @@ a transition trace. The run config records `advanced.weight_quantization`,
 `advanced.kv_quantization`, `advanced.lora`, and
 `advanced.structured_output` flags.
 
+Phase 13 single-node distributed benchmarks exercise CPU/CUDA-friendly
+reference DP/TP/PP/EP primitives and communication accounting:
+
+```bash
+python -m nano_serve.cli phase13-distributed \
+  --world-size 4 \
+  --hidden-size 512 \
+  --batch-size 8 \
+  --microbatches 4
+```
+
+The run emits `phase13_worker_lifecycle`, `phase13_dp_assignment`,
+`phase13_dp_case`, `phase13_tp_case`, `phase13_pp_stage`,
+`phase13_pp_case`, and `phase13_ep_case` events. Cases record DP assignment
+balance, TP row/column shard correctness, all-reduce bytes, parameter shard
+bytes, KV shard bytes, PP bubble slots/ratio, EP rank/expert token counts,
+all-to-all bytes, and CUDA device metadata. NCCL is represented as explicit
+communication byte accounting in Phase 13; later phases can replace the local
+reference transport with real `torch.distributed`/NCCL workers.
+
 ### Online Serving
 
 Simulates request arrival and user-observed latency:

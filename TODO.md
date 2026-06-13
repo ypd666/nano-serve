@@ -111,10 +111,10 @@ roadmap; this file is the more operational backlog.
 
 ## M13-M17: Distributed and Production-Like Serving
 
-- [ ] Data-parallel replicas.
-- [ ] Tensor parallelism.
-- [ ] Pipeline parallelism.
-- [ ] Expert parallelism.
+- [x] Data-parallel replicas.
+- [x] Tensor parallelism.
+- [x] Pipeline parallelism.
+- [x] Expert parallelism.
 - [ ] Multi-node worker launcher.
 - [ ] PD disaggregation.
 - [ ] AF disaggregation simulator and prototype.

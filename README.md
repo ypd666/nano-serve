@@ -307,13 +307,13 @@ compute-bound; decode is often more memory-bound.
 
 ### Phase 13: Single-Node Distributed
 
-- [ ] Implement data-parallel replicas.
-- [ ] Implement tensor parallelism.
-- [ ] Implement NCCL all-reduce.
-- [ ] Shard attention heads, MLP weights, and KV cache where needed.
-- [ ] Implement pipeline parallelism.
-- [ ] Implement expert parallelism for MoE.
-- [ ] Benchmark TP/PP/EP scaling.
+- [x] Implement data-parallel replicas.
+- [x] Implement tensor parallelism.
+- [x] Implement NCCL/all-reduce accounting.
+- [x] Shard attention heads, MLP weights, and KV cache where needed.
+- [x] Implement pipeline parallelism.
+- [x] Implement expert parallelism for MoE.
+- [x] Benchmark TP/PP/EP scaling.
 
 ### Phase 14: Multi-Node Distributed
 

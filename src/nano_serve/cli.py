@@ -22,6 +22,10 @@ from nano_serve.benchmark.phase12 import (
     Phase12AdvancedBenchmarkConfig,
     run_phase12_advanced_benchmark,
 )
+from nano_serve.benchmark.phase13 import (
+    Phase13DistributedBenchmarkConfig,
+    run_phase13_distributed_benchmark,
+)
 from nano_serve.benchmark.phase5 import Phase5KVBenchmarkConfig, run_phase5_kv_benchmark
 from nano_serve.benchmark.phase6 import (
     Phase6PagedAttentionBenchmarkConfig,
@@ -154,6 +158,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_phase12_advanced_args(phase12)
     phase12.set_defaults(func=_phase12_advanced)
 
+    phase13 = subcommands.add_parser(
+        "phase13-distributed",
+        help="Run the Phase 13 single-node distributed benchmark.",
+    )
+    _add_phase13_distributed_args(phase13)
+    phase13.set_defaults(func=_phase13_distributed)
+
     bench = subcommands.add_parser("bench", help="Benchmark helper commands.")
     bench_commands = bench.add_subparsers(dest="bench_command")
     bench_dummy = bench_commands.add_parser(
@@ -216,6 +227,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_phase12_advanced_args(bench_advanced)
     bench_advanced.set_defaults(func=_phase12_advanced)
+    bench_distributed = bench_commands.add_parser(
+        "distributed",
+        help="Alias for the Phase 13 single-node distributed benchmark.",
+    )
+    _add_phase13_distributed_args(bench_distributed)
+    bench_distributed.set_defaults(func=_phase13_distributed)
     bench_compare = bench_commands.add_parser(
         "compare",
         help="Compare two benchmark run summaries or run directories.",
@@ -575,6 +592,21 @@ def _add_phase12_advanced_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--seed", type=int, default=0, help="random seed")
 
 
+def _add_phase13_distributed_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("runs/phase13"),
+        help="directory for run artifacts",
+    )
+    parser.add_argument("--world-size", type=int, default=4, help="single-node ranks")
+    parser.add_argument("--hidden-size", type=int, default=512, help="hidden dimension")
+    parser.add_argument("--batch-size", type=int, default=8, help="requests/tokens per case")
+    parser.add_argument("--microbatches", type=int, default=4, help="pipeline microbatches")
+    parser.add_argument("--num-experts", type=int, default=8, help="expert count")
+    parser.add_argument("--seed", type=int, default=0, help="random seed")
+
+
 def _assets_env(_: argparse.Namespace) -> int:
     print(env_template())
     return 0
@@ -773,6 +805,22 @@ def _phase12_advanced(args: argparse.Namespace) -> int:
             rank=args.rank,
             tokens=args.tokens,
             batch_size=args.batch_size,
+            seed=args.seed,
+        )
+    )
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
+def _phase13_distributed(args: argparse.Namespace) -> int:
+    summary = run_phase13_distributed_benchmark(
+        Phase13DistributedBenchmarkConfig(
+            output_dir=args.output_dir,
+            world_size=args.world_size,
+            hidden_size=args.hidden_size,
+            batch_size=args.batch_size,
+            microbatches=args.microbatches,
+            num_experts=args.num_experts,
             seed=args.seed,
         )
     )
