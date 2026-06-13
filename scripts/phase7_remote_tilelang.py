@@ -8,8 +8,10 @@ configuration or infer private host aliases.
 from __future__ import annotations
 
 import argparse
+import json
 import shlex
 import subprocess
+from pathlib import Path
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,9 +39,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repeats", type=int, default=10)
     parser.add_argument("--output-dir", default="runs/phase7-h100")
     parser.add_argument(
+        "--fetch-dir",
+        type=Path,
+        help="optional local directory for fetching the remote run artifact",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="print the remote command without executing ssh",
+        help="print commands without executing ssh or scp",
     )
     args = parser.parse_args(argv)
 
@@ -47,10 +54,34 @@ def main(argv: list[str] | None = None) -> int:
     ssh_command = ["ssh", args.host, remote_command]
     if args.dry_run:
         print(" ".join(shlex.quote(part) for part in ssh_command))
+        if args.fetch_dir is not None:
+            print(_dry_run_scp_command(args, "<remote-run-dir>"))
         return 0
 
-    result = subprocess.run(ssh_command, check=False)
-    return int(result.returncode)
+    result = subprocess.run(ssh_command, check=False, capture_output=True, text=True)
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="")
+    if result.returncode != 0:
+        return int(result.returncode)
+
+    remote_run_dir = _parse_remote_run_dir(result.stdout)
+    if args.fetch_dir is not None and remote_run_dir is None:
+        print("remote run directory was not found in command output")
+        return 1
+    if args.fetch_dir is not None and remote_run_dir is not None:
+        args.fetch_dir.mkdir(parents=True, exist_ok=True)
+        scp_command = [
+            "scp",
+            "-r",
+            f"{args.host}:{remote_run_dir}",
+            str(args.fetch_dir),
+        ]
+        fetch = subprocess.run(scp_command, check=False)
+        if fetch.returncode != 0:
+            return int(fetch.returncode)
+    return 0
 
 
 def _remote_command(args: argparse.Namespace) -> str:
@@ -70,7 +101,7 @@ def _remote_command(args: argparse.Namespace) -> str:
         f"cd {remote_dir}",
         "uv sync --extra torch --extra tilelang --extra dev",
         (
-            "uv run python -m nano_serve.cli phase7-kernels --require-tilelang "
+            "summary_json=$(uv run python -m nano_serve.cli phase7-kernels --require-tilelang "
             f"--output-dir {output_dir} "
             f"--hidden-size {args.hidden_size} "
             f"--seq-len {args.seq_len} "
@@ -80,10 +111,40 @@ def _remote_command(args: argparse.Namespace) -> str:
             f"--head-dim {args.head_dim} "
             f"--context-len {args.context_len} "
             f"--block-size {args.block_size} "
-            f"--repeats {args.repeats}"
+            f"--repeats {args.repeats}) && "
+            "printf '%s\n' \"$summary_json\" && "
+            "SUMMARY_JSON=\"$summary_json\" uv run python -c "
+            "\"import json, os; summary=json.loads(os.environ['SUMMARY_JSON']); "
+            "print('NANO_SERVE_REMOTE_RUN_DIR=' + str(summary.get('run_dir', '')))\""
         ),
     ]
     return " && ".join(f"({command})" for command in commands)
+
+
+def _parse_remote_run_dir(output: str) -> str | None:
+    for line in reversed(output.splitlines()):
+        if line.startswith("NANO_SERVE_REMOTE_RUN_DIR="):
+            run_dir = line.split("=", 1)[1].strip()
+            return run_dir or None
+    for line in reversed(output.splitlines()):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        run_dir = payload.get("run_dir")
+        if isinstance(run_dir, str) and run_dir:
+            return run_dir
+    return None
+
+
+def _dry_run_scp_command(args: argparse.Namespace, remote_run_dir: str) -> str:
+    command = [
+        "scp",
+        "-r",
+        f"{args.host}:{remote_run_dir}",
+        str(args.fetch_dir),
+    ]
+    return " ".join(shlex.quote(part) for part in command)
 
 
 if __name__ == "__main__":

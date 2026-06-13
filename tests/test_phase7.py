@@ -13,7 +13,10 @@ from nano_serve.kernels.tilelang.availability import (
     check_tilelang_available,
 )
 from nano_serve.observability import read_jsonl_events
-from scripts.phase7_remote_tilelang import main as remote_main
+from scripts.phase7_remote_tilelang import (
+    _parse_remote_run_dir,
+    main as remote_main,
+)
 
 
 def test_tilelang_wrappers_match_torch_references() -> None:
@@ -132,6 +135,8 @@ def test_phase7_remote_runner_dry_run(capsys) -> None:
             "user@h100",
             "--remote-dir",
             "~/nano-serve-test",
+            "--fetch-dir",
+            "runs/remote-phase7",
             "--dry-run",
         ]
     )
@@ -140,3 +145,17 @@ def test_phase7_remote_runner_dry_run(capsys) -> None:
     assert exit_code == 0
     assert "ssh user@h100" in output
     assert "phase7-kernels --require-tilelang" in output
+    assert "scp -r" in output
+    assert "user@h100:<remote-run-dir>" in output
+    assert "remote-phase7" in output
+
+
+def test_phase7_remote_runner_parses_remote_run_dir() -> None:
+    output = "\n".join(
+        [
+            '{"status": "ok", "run_dir": "runs/phase7-h100/abc"}',
+            "NANO_SERVE_REMOTE_RUN_DIR=runs/phase7-h100/abc",
+        ]
+    )
+
+    assert _parse_remote_run_dir(output) == "runs/phase7-h100/abc"

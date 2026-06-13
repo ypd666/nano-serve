@@ -116,7 +116,10 @@ artifact with the Nsight Compute command intended for Linux NVIDIA profiling.
 For remote Linux NVIDIA validation, use an explicit SSH target:
 
 ```bash
-python scripts/phase7_remote_tilelang.py --host user@h100 --remote-dir ~/nano-serve
+python scripts/phase7_remote_tilelang.py \
+  --host user@h100 \
+  --remote-dir ~/nano-serve \
+  --fetch-dir runs/phase7-remote
 ```
 
 ### Online Serving

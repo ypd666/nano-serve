@@ -69,7 +69,8 @@ of silently benchmarking the torch fallback.
 Linux NVIDIA machines. It requires `--host user@host` and does not inspect local
 SSH configuration. The script clones or updates the repository on the remote
 host, creates the uv environment with `torch`, `tilelang`, and `dev` extras, and
-runs `phase7-kernels --require-tilelang`.
+runs `phase7-kernels --require-tilelang`. With `--fetch-dir`, it copies the
+remote run directory back through `scp -r`.
 
 This slice is not the final Phase 7 performance milestone. The final milestone
 still requires a real TileLang paged decode attention kernel, a benchmark where
@@ -109,7 +110,10 @@ nano-serve phase7-kernels --require-tilelang
 Remote H100/H20 runner:
 
 ```bash
-python scripts/phase7_remote_tilelang.py --host user@h100 --remote-dir ~/nano-serve
+python scripts/phase7_remote_tilelang.py \
+  --host user@h100 \
+  --remote-dir ~/nano-serve \
+  --fetch-dir runs/phase7-remote
 ```
 
 ## Exit Criteria
