@@ -9,6 +9,13 @@ from nano_serve.kv_cache.contiguous import (
     ContiguousLayerState,
 )
 from nano_serve.kv_cache.paged import PagedKVCache, PagedKVStats
+from nano_serve.kv_cache.prefix_cache import (
+    PrefixCache,
+    PrefixCacheEntry,
+    PrefixCacheInsertResult,
+    PrefixCacheLookup,
+    PrefixCacheStats,
+)
 
 __all__ = [
     "BlockTable",
@@ -20,4 +27,9 @@ __all__ = [
     "KVHandle",
     "PagedKVCache",
     "PagedKVStats",
+    "PrefixCache",
+    "PrefixCacheEntry",
+    "PrefixCacheInsertResult",
+    "PrefixCacheLookup",
+    "PrefixCacheStats",
 ]

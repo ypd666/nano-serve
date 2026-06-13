@@ -263,13 +263,13 @@ memory-bound。
 
 ### Phase 9: Prefix Cache / Radix Cache
 
-- [ ] Implement block-level prefix hash cache.
-- [ ] Implement prefix cache ref counting.
-- [ ] Implement LRU eviction.
-- [ ] Implement copy-on-write for shared blocks.
-- [ ] Implement radix tree prefix cache.
-- [ ] Track prefix cache hit tokens.
-- [ ] Benchmark shared system prompt and multi-turn chat workloads.
+- [x] Implement block-level prefix hash cache.
+- [x] Implement prefix cache ref counting.
+- [x] Implement LRU eviction.
+- [x] Implement copy-on-write for shared blocks.
+- [x] Implement radix tree prefix cache.
+- [x] Track prefix cache hit tokens.
+- [x] Benchmark shared system prompt and multi-turn chat workloads.
 
 ### Phase 10: CPU/GPU Overlap and Graphs
 

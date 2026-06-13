@@ -131,6 +131,94 @@ def test_paged_kv_oom_tracks_failure_count() -> None:
     assert cache.stats().oom_count == 1
 
 
+def test_prefix_cache_lookup_uses_full_block_prefix_only() -> None:
+    from nano_serve.kv_cache.prefix_cache import PrefixCache
+
+    prefix_cache = PrefixCache(block_size=4)
+    prefix_cache.insert([1, 2, 3, 4, 5, 6], [10])
+
+    hit = prefix_cache.lookup([1, 2, 3, 4, 99])
+    miss = prefix_cache.lookup([1, 2, 3, 0])
+
+    assert hit.hit is True
+    assert hit.matched_tokens == 4
+    assert hit.block_ids == (10,)
+    assert miss.hit is False
+
+
+def test_prefix_cache_lru_eviction_calls_release_callback() -> None:
+    from nano_serve.kv_cache.prefix_cache import PrefixCache
+
+    prefix_cache = PrefixCache(block_size=2, max_entries=1)
+    evicted = []
+
+    first = prefix_cache.insert([1, 2], [0], on_evict=evicted.append)
+    second = prefix_cache.insert([3, 4], [1], on_evict=evicted.append)
+
+    assert len(first.inserted) == 1
+    assert len(second.evicted) == 1
+    assert [entry.block_ids for entry in evicted] == [(0,)]
+    assert prefix_cache.lookup([1, 2]).hit is False
+    assert prefix_cache.lookup([3, 4]).hit is True
+    assert prefix_cache.stats().evictions == 1
+
+
+def test_paged_kv_prefix_reuse_refcounts_and_free() -> None:
+    from nano_serve.kv_cache.paged import PagedKVCache
+    from nano_serve.kv_cache.prefix_cache import PrefixCache
+
+    cache = PagedKVCache(num_blocks=8, block_size=2)
+    prefix_cache = PrefixCache(block_size=2)
+    first = cache.allocate_prefill("req-a", 5)
+    prefix_cache.insert(
+        [1, 2, 3, 4, 5],
+        first.block_ids,
+        on_insert=lambda entry: cache.retain_blocks(list(entry.block_ids)),
+        on_evict=lambda entry: cache.release_blocks(list(entry.block_ids)),
+    )
+    lookup = prefix_cache.lookup([1, 2, 3, 4, 9, 10])
+    second = cache.allocate_prefill_with_prefix(
+        "req-b",
+        7,
+        prefix_block_ids=list(lookup.block_ids),
+        prefix_tokens=lookup.matched_tokens,
+    )
+
+    assert second.block_ids[:2] == first.block_ids[:2]
+    assert lookup.matched_tokens == 4
+    assert cache.blocks[first.block_ids[0]].ref_count == 4
+    assert cache.blocks[first.block_ids[1]].ref_count == 3
+    assert cache.stats().shared_blocks == 2
+
+    cache.free("req-a")
+
+    assert cache.blocks[first.block_ids[0]].ref_count == 3
+    assert cache.get_block_table("req-b")[:2] == first.block_ids[:2]
+
+    for entry in prefix_cache.entries():
+        cache.release_blocks(list(entry.block_ids))
+    cache.free("req-b")
+
+    assert cache.stats().free_blocks == 8
+
+
+def test_paged_kv_copy_on_write_for_shared_tail_block() -> None:
+    from nano_serve.kv_cache.paged import PagedKVCache
+
+    cache = PagedKVCache(num_blocks=4, block_size=4)
+    first = cache.allocate_prefill("req-a", 3)
+    shared_tail = first.block_ids[0]
+    cache.fork_request("req-a", "req-b", prefix_tokens=3)
+    before = cache.get_block_table("req-b")
+
+    handle = cache.allocate_decode_slot("req-b")
+
+    assert before == [shared_tail]
+    assert handle.block_ids[0] != shared_tail
+    assert cache.blocks[shared_tail].ref_count == 1
+    assert cache.stats().cow_copies == 1
+
+
 def test_paged_kv_randomized_invariants() -> None:
     import random
 

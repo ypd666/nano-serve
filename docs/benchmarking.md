@@ -145,6 +145,23 @@ The sweep includes a no-chunk baseline where chunk size equals the full long
 prompt. When `matplotlib` is installed, the run also writes a
 `chunk_size_frontier.png` artifact for the TTFT/TPOT tradeoff.
 
+Phase 9 prefix-cache benchmarks compare plain paged KV allocation with
+block-level prefix reuse:
+
+```bash
+python -m nano_serve.cli phase9-prefix-cache \
+  --requests 64 \
+  --shared-prefix-tokens 512 \
+  --unique-suffix-tokens 64 \
+  --block-size 16 \
+  --cache-blocks 4096
+```
+
+The run emits `prefix_cache_lookup`, `prefix_cache_insert`,
+`prefix_cache_evict`, `prefix_cache_request_end`, and `prefix_cache_case`
+events. It records hit tokens, hit rate, saved prefill tokens, estimated TTFT
+improvement, used/free blocks, shared blocks, COW copies, and eviction count.
+
 ### Online Serving
 
 Simulates request arrival and user-observed latency:

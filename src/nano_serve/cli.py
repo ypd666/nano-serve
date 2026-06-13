@@ -23,6 +23,10 @@ from nano_serve.benchmark.phase8 import (
     Phase8ChunkedPrefillBenchmarkConfig,
     run_phase8_chunked_prefill_benchmark,
 )
+from nano_serve.benchmark.phase9 import (
+    Phase9PrefixCacheBenchmarkConfig,
+    run_phase9_prefix_cache_benchmark,
+)
 from nano_serve.benchmark.phase0 import Phase0SmokeConfig, run_phase0_smoke
 from nano_serve.engine.config import EngineConfig
 from nano_serve.scheduler.policies import SchedulerPolicy
@@ -110,6 +114,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_phase8_chunked_prefill_args(phase8)
     phase8.set_defaults(func=_phase8_chunked_prefill)
 
+    phase9 = subcommands.add_parser(
+        "phase9-prefix-cache",
+        help="Run the Phase 9 prefix-cache benchmark.",
+    )
+    _add_phase9_prefix_cache_args(phase9)
+    phase9.set_defaults(func=_phase9_prefix_cache)
+
     bench = subcommands.add_parser("bench", help="Benchmark helper commands.")
     bench_commands = bench.add_subparsers(dest="bench_command")
     bench_dummy = bench_commands.add_parser(
@@ -148,6 +159,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_phase8_chunked_prefill_args(bench_chunked_prefill)
     bench_chunked_prefill.set_defaults(func=_phase8_chunked_prefill)
+    bench_prefix_cache = bench_commands.add_parser(
+        "prefix-cache",
+        help="Alias for the Phase 9 prefix-cache benchmark.",
+    )
+    _add_phase9_prefix_cache_args(bench_prefix_cache)
+    bench_prefix_cache.set_defaults(func=_phase9_prefix_cache)
     bench_compare = bench_commands.add_parser(
         "compare",
         help="Compare two benchmark run summaries or run directories.",
@@ -395,6 +412,42 @@ def _add_phase8_chunked_prefill_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_phase9_prefix_cache_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("runs/phase9"),
+        help="directory for run artifacts",
+    )
+    parser.add_argument("--requests", type=int, default=64, help="requests to simulate")
+    parser.add_argument(
+        "--shared-prefix-tokens",
+        type=int,
+        default=512,
+        help="shared prompt prefix length in tokens",
+    )
+    parser.add_argument(
+        "--unique-suffix-tokens",
+        type=int,
+        default=64,
+        help="per-request unique suffix length in tokens",
+    )
+    parser.add_argument("--block-size", type=int, default=16, help="KV block size")
+    parser.add_argument("--cache-blocks", type=int, default=4096, help="KV block capacity")
+    parser.add_argument(
+        "--max-prefix-entries",
+        type=int,
+        default=None,
+        help="maximum cached prefix entries before LRU eviction",
+    )
+    parser.add_argument(
+        "--prefill-token-time-ms",
+        type=float,
+        default=0.02,
+        help="simulated cost per prefill token",
+    )
+
+
 def _assets_env(_: argparse.Namespace) -> int:
     print(env_template())
     return 0
@@ -525,6 +578,23 @@ def _phase8_chunked_prefill(args: argparse.Namespace) -> int:
             max_num_batched_tokens=args.max_num_batched_tokens,
             prefill_token_time_ms=args.prefill_token_time_ms,
             decode_token_time_ms=args.decode_token_time_ms,
+        )
+    )
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
+def _phase9_prefix_cache(args: argparse.Namespace) -> int:
+    summary = run_phase9_prefix_cache_benchmark(
+        Phase9PrefixCacheBenchmarkConfig(
+            output_dir=args.output_dir,
+            requests=args.requests,
+            shared_prefix_tokens=args.shared_prefix_tokens,
+            unique_suffix_tokens=args.unique_suffix_tokens,
+            block_size=args.block_size,
+            cache_blocks=args.cache_blocks,
+            max_prefix_entries=args.max_prefix_entries,
+            prefill_token_time_ms=args.prefill_token_time_ms,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
