@@ -209,15 +209,15 @@ memory-bound。
 
 ### Phase 4: Continuous Batching
 
-- [ ] Implement `RequestState` state machine.
-- [ ] Implement waiting/running/finished queues.
-- [ ] Implement `Engine.step()`.
-- [ ] Implement FCFS scheduler.
-- [ ] Implement `max_num_seqs` and `max_num_batched_tokens`.
-- [ ] Allow new requests to enter during decode.
-- [ ] Allow finished requests to leave immediately.
-- [ ] Add decode-first and prefill-first policies.
-- [ ] Benchmark static batching vs continuous batching.
+- [x] Implement `RequestState` state machine.
+- [x] Implement waiting/running/finished queues.
+- [x] Implement `Engine.step()`.
+- [x] Implement FCFS scheduler.
+- [x] Implement `max_num_seqs` and `max_num_batched_tokens`.
+- [x] Allow new requests to enter during decode.
+- [x] Allow finished requests to leave immediately.
+- [x] Add decode-first and prefill-first policies.
+- [x] Benchmark static batching vs continuous batching.
 - [ ] Add vLLM and SGLang baseline benchmark scripts once the local engine can
       run comparable workloads.
 

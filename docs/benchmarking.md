@@ -54,6 +54,20 @@ Batch summaries record `total_padded_tokens`, `total_inactive_slot_steps`,
 `model_invocations`, and `decode_invocations` so fixed-batch waste can be
 compared against the single-request baseline.
 
+Phase 4 continuous batching uses the same offline runner and compares against
+the static batch baseline:
+
+```bash
+python -m nano_serve.cli phase1-offline --scheduler static_batch --batch-size 4 --kv-cache none
+python -m nano_serve.cli phase1-offline --scheduler continuous --batch-size 4 --kv-cache none
+```
+
+The continuous run emits `continuous_iteration_start/end` and
+`continuous_request_end` events. Iteration events record `batch_kind`,
+`batch_size`, `num_prefill_tokens`, `num_decode_tokens`,
+`num_running_reqs`, `num_waiting_reqs`, `cpu_schedule_time_ms`,
+`padded_tokens`, and `request_ids`.
+
 ### Online Serving
 
 Simulates request arrival and user-observed latency:

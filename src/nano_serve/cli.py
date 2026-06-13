@@ -12,6 +12,7 @@ from nano_serve.benchmark.compare import compare_runs, render_compare_markdown
 from nano_serve.benchmark.offline import OfflineBenchmarkConfig, run_offline_benchmark
 from nano_serve.benchmark.phase0 import Phase0SmokeConfig, run_phase0_smoke
 from nano_serve.engine.config import EngineConfig
+from nano_serve.scheduler.policies import SchedulerPolicy
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -164,15 +165,27 @@ def _add_phase1_offline_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--scheduler",
-        choices=("single", "static_batch"),
+        choices=("single", "static_batch", "continuous"),
         default="single",
         help="scheduler mode for the torch offline benchmark",
+    )
+    parser.add_argument(
+        "--scheduler-policy",
+        choices=tuple(policy.value for policy in SchedulerPolicy),
+        default=SchedulerPolicy.FCFS.value,
+        help="continuous scheduler policy",
     )
     parser.add_argument(
         "--batch-size",
         type=int,
         default=1,
-        help="fixed batch size when --scheduler static_batch",
+        help="max active sequences for static/continuous batching",
+    )
+    parser.add_argument(
+        "--max-num-batched-tokens",
+        type=int,
+        default=4096,
+        help="maximum full-context tokens selected per continuous iteration",
     )
 
 
@@ -228,7 +241,9 @@ def _phase1_offline(args: argparse.Namespace) -> int:
             workload=args.workload,
             kv_cache=args.kv_cache,
             scheduler=args.scheduler,
+            scheduler_policy=SchedulerPolicy(args.scheduler_policy),
             batch_size=args.batch_size,
+            max_num_batched_tokens=args.max_num_batched_tokens,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))

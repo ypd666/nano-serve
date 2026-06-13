@@ -20,6 +20,7 @@ from nano_serve.model.tokenizer import TokenizerWrapper
 from nano_serve.observability import Event, JSONLEventWriter, platform_event
 from nano_serve.platform import detect_platform
 from nano_serve.sampling.base import SamplingParams
+from nano_serve.scheduler.policies import SchedulerPolicy
 
 
 @dataclass(frozen=True)
@@ -31,7 +32,9 @@ class OfflineBenchmarkConfig:
     workload: str = "single_short"
     kv_cache: KVCacheKind = "none"
     scheduler: SchedulerKind = "single"
+    scheduler_policy: SchedulerPolicy = SchedulerPolicy.FCFS
     batch_size: int = 1
+    max_num_batched_tokens: int = 4096
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,9 @@ class BatchBenchmarkSummary:
     total_padded_tokens: int
     total_inactive_slot_steps: int
     max_tokens_per_slot: int
+    total_cpu_schedule_time_ms: float = 0.0
+    max_running_reqs: int = 0
+    max_waiting_reqs: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -93,6 +99,9 @@ class BatchBenchmarkSummary:
             "total_padded_tokens": self.total_padded_tokens,
             "total_inactive_slot_steps": self.total_inactive_slot_steps,
             "max_tokens_per_slot": self.max_tokens_per_slot,
+            "total_cpu_schedule_time_ms": self.total_cpu_schedule_time_ms,
+            "max_running_reqs": self.max_running_reqs,
+            "max_waiting_reqs": self.max_waiting_reqs,
         }
 
 
@@ -113,7 +122,9 @@ def run_offline_benchmark(config: OfflineBenchmarkConfig) -> dict[str, object]:
         dataset_path=str(asset_config.dataset_path),
         kv_cache=config.kv_cache,
         scheduler=config.scheduler,
+        scheduler_policy=config.scheduler_policy,
         max_num_seqs=config.batch_size,
+        max_num_batched_tokens=config.max_num_batched_tokens,
     )
     run_config = {
         "run_id": run_id,
@@ -121,7 +132,9 @@ def run_offline_benchmark(config: OfflineBenchmarkConfig) -> dict[str, object]:
         "workload": config.workload,
         "kv_cache": config.kv_cache,
         "scheduler": config.scheduler,
+        "scheduler_policy": config.scheduler_policy.value,
         "batch_size": config.batch_size,
+        "max_num_batched_tokens": config.max_num_batched_tokens,
         "num_samples": config.num_samples,
         "max_new_tokens": config.max_new_tokens,
         "max_prompt_tokens": config.max_prompt_tokens,
@@ -161,9 +174,21 @@ def run_offline_benchmark(config: OfflineBenchmarkConfig) -> dict[str, object]:
             )
         )
 
-        for batch_id, samples in enumerate(
-            _sample_batches(dataset.samples, _effective_batch_size(config))
-        ):
+        if config.scheduler == "continuous":
+            continuous_request_summaries, continuous_batch_summary = _run_continuous_batch(
+                samples=dataset.samples,
+                batch_id=0,
+                config=config,
+                tokenizer=tokenizer,
+                engine=engine,
+                writer=writer,
+            )
+            request_summaries.extend(continuous_request_summaries)
+            batch_summaries.append(continuous_batch_summary)
+
+        for batch_id, samples in enumerate(_sample_batches(dataset.samples, config.batch_size)):
+            if config.scheduler == "continuous":
+                break
             if config.scheduler == "static_batch":
                 batch_request_summaries, batch_summary = _run_static_batch(
                     samples=samples,
@@ -307,7 +332,9 @@ def _summary(
         "workload": config.workload,
         "kv_cache": config.kv_cache,
         "scheduler": config.scheduler,
+        "scheduler_policy": config.scheduler_policy.value,
         "batch_size": config.batch_size,
+        "max_num_batched_tokens": config.max_num_batched_tokens,
         "status": "ok",
         "run_dir": str(run_dir),
         "samples_loaded": len(request_summaries),
@@ -332,6 +359,17 @@ def _summary(
         "total_padded_tokens": sum(item.total_padded_tokens for item in batch_summaries),
         "total_inactive_slot_steps": sum(
             item.total_inactive_slot_steps for item in batch_summaries
+        ),
+        "total_cpu_schedule_time_ms": sum(
+            item.total_cpu_schedule_time_ms for item in batch_summaries
+        ),
+        "max_running_reqs": max(
+            (item.max_running_reqs for item in batch_summaries),
+            default=0,
+        ),
+        "max_waiting_reqs": max(
+            (item.max_waiting_reqs for item in batch_summaries),
+            default=0,
         ),
         "max_kv_bytes_used": max(
             (item.kv_bytes_used or 0 for item in request_summaries),
@@ -455,6 +493,117 @@ def _run_static_batch(
     return request_summaries, _batch_summary_from_events(batch_id, batch_events)
 
 
+def _run_continuous_batch(
+    *,
+    samples: list[ServingSample],
+    batch_id: int,
+    config: OfflineBenchmarkConfig,
+    tokenizer: TokenizerWrapper,
+    engine: Engine,
+    writer: JSONLEventWriter,
+) -> tuple[list[RequestBenchmarkSummary], BatchBenchmarkSummary]:
+    prompt_token_ids_batch = [
+        tokenizer.encode(sample.prompt)[: config.max_prompt_tokens] for sample in samples
+    ]
+    sampling_params = [
+        SamplingParams(
+            max_tokens=config.max_new_tokens,
+            stop_token_ids=_stop_token_ids(tokenizer),
+        )
+        for _ in samples
+    ]
+    request_ids = [
+        f"continuous-{batch_id}-req-{slot}-sample-{sample.sample_id}"
+        for slot, sample in enumerate(samples)
+    ]
+    request_lookup = {
+        request_id: (slot, sample)
+        for slot, (request_id, sample) in enumerate(zip(request_ids, samples, strict=True))
+    }
+    stream_events: dict[str, list[StreamEvent]] = {request_id: [] for request_id in request_ids}
+    batch_events: list[BatchEvent] = []
+    before_finished = len(engine.finished)
+    batch_start_ns = time.monotonic_ns()
+
+    def stream_callback(event: StreamEvent) -> None:
+        stream_events[event.request_id].append(event)
+        slot, sample = request_lookup[event.request_id]
+        writer.write(
+            Event(
+                "stream_token",
+                fields={
+                    "request_id": event.request_id,
+                    "sample_id": sample.sample_id,
+                    "batch_id": batch_id,
+                    "slot": slot,
+                    "token_id": event.token_id,
+                    "token_index": event.token_index,
+                },
+            )
+        )
+
+    def batch_callback(event: BatchEvent) -> None:
+        batch_events.append(event)
+        writer.write(
+            Event(
+                f"continuous_{event.event}",
+                fields={
+                    "batch_id": batch_id,
+                    "iteration": event.iteration,
+                    "engine_timestamp_ns": event.timestamp_ns,
+                    **event.metadata,
+                },
+            )
+        )
+
+    output_token_ids_batch = engine.generate_continuous(
+        list(zip(prompt_token_ids_batch, sampling_params, strict=True)),
+        request_ids=request_ids,
+        stream_callback=stream_callback,
+        batch_callback=batch_callback,
+    )
+    batch_end_ns = time.monotonic_ns()
+    states = engine.finished[before_finished : before_finished + len(samples)]
+    if len(states) != len(samples):
+        raise RuntimeError("continuous finished state count mismatch")
+    states_by_id = {state.request_id: state for state in states}
+
+    request_summaries: list[RequestBenchmarkSummary] = []
+    for slot, (sample, prompt_token_ids, output_token_ids, request_id) in enumerate(
+        zip(samples, prompt_token_ids_batch, output_token_ids_batch, request_ids, strict=True)
+    ):
+        state = states_by_id[request_id]
+        if len(stream_events[request_id]) != len(output_token_ids):
+            raise RuntimeError("stream callback count does not match generated tokens")
+
+        request_summary = RequestBenchmarkSummary(
+            sample_id=sample.sample_id,
+            source_index=sample.source_index,
+            input_tokens=len(prompt_token_ids),
+            output_tokens=len(output_token_ids),
+            stop_reason=state.stop_reason,
+            ttft_ms=state.metrics.ttft_ms,
+            tpot_ms=state.metrics.tpot_ms(len(output_token_ids)),
+            e2e_ms=state.metrics.e2e_ms,
+            wall_ms=(batch_end_ns - batch_start_ns) / 1_000_000,
+            kv_cache=config.kv_cache,
+            batch_id=batch_id,
+        )
+        request_summaries.append(request_summary)
+        writer.write(
+            Event(
+                "continuous_request_end",
+                fields={
+                    **request_summary.to_dict(),
+                    "request_id": request_id,
+                    "slot": slot,
+                },
+            )
+        )
+
+    return request_summaries, _continuous_batch_summary_from_events(batch_id, batch_events)
+
+
 def _batch_summary_from_events(
     batch_id: int,
     batch_events: list[BatchEvent],
@@ -496,6 +645,47 @@ def _batch_summary_from_events(
     )
 
 
+def _continuous_batch_summary_from_events(
+    batch_id: int,
+    batch_events: list[BatchEvent],
+) -> BatchBenchmarkSummary:
+    starts = [event for event in batch_events if event.event == "iteration_start"]
+    return BatchBenchmarkSummary(
+        batch_id=batch_id,
+        batch_size=max(
+            (_optional_int(event.metadata.get("batch_size")) or 0 for event in starts),
+            default=0,
+        ),
+        model_invocations=len(starts),
+        decode_invocations=sum(
+            1 for event in starts if _optional_int(event.metadata.get("num_decode_tokens"))
+        ),
+        total_real_tokens=sum(
+            _optional_int(event.metadata.get("real_tokens")) or 0 for event in starts
+        ),
+        total_padded_tokens=sum(
+            _optional_int(event.metadata.get("padded_tokens")) or 0 for event in starts
+        ),
+        total_inactive_slot_steps=0,
+        max_tokens_per_slot=max(
+            (_optional_int(event.metadata.get("max_tokens_per_slot")) or 0 for event in starts),
+            default=0,
+        ),
+        total_cpu_schedule_time_ms=sum(
+            _optional_float(event.metadata.get("cpu_schedule_time_ms")) or 0.0
+            for event in starts
+        ),
+        max_running_reqs=max(
+            (_optional_int(event.metadata.get("num_running_reqs")) or 0 for event in starts),
+            default=0,
+        ),
+        max_waiting_reqs=max(
+            (_optional_int(event.metadata.get("num_waiting_reqs")) or 0 for event in starts),
+            default=0,
+        ),
+    )
+
+
 def _sample_batches(
     samples: list[ServingSample],
     batch_size: int,
@@ -515,14 +705,22 @@ def _validate_offline_config(config: OfflineBenchmarkConfig) -> None:
         raise ValueError("batch_size must be positive")
     if config.scheduler == "static_batch" and config.kv_cache != "none":
         raise ValueError("Phase 3 static batching currently requires kv_cache='none'.")
+    if config.scheduler == "continuous" and config.kv_cache != "none":
+        raise ValueError("Phase 4 continuous batching currently requires kv_cache='none'.")
+    if config.max_num_batched_tokens <= 0:
+        raise ValueError("max_num_batched_tokens must be positive")
 
 
 def _effective_batch_size(config: OfflineBenchmarkConfig) -> int:
-    return config.batch_size if config.scheduler == "static_batch" else 1
+    return config.batch_size if config.scheduler in {"static_batch", "continuous"} else 1
 
 
 def _phase_name(config: OfflineBenchmarkConfig) -> str:
-    return "phase3" if config.scheduler == "static_batch" else "phase1"
+    if config.scheduler == "continuous":
+        return "phase4"
+    if config.scheduler == "static_batch":
+        return "phase3"
+    return "phase1"
 
 
 def _latest_kv_metadata(state: object) -> dict[str, object]:

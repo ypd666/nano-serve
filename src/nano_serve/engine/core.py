@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import time
 import uuid
-from pathlib import Path
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+from nano_serve.engine.batch import BatchKind, BatchPlan
 from nano_serve.engine.config import EngineConfig
 from nano_serve.engine.request import RequestMetrics, RequestState, RequestStatus
 from nano_serve.sampling.base import SamplingParams
 from nano_serve.sampling.greedy import GreedySampler
 from nano_serve.sampling.topk_topp import TopKTopPSampler
+from nano_serve.scheduler.base import ScheduleBudget
+from nano_serve.scheduler.continuous import ContinuousScheduler
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,7 @@ class Engine:
         self.model_runner: Any | None = None
         self.greedy_sampler = GreedySampler()
         self.topk_topp_sampler = TopKTopPSampler()
+        self.iteration = 0
 
     def add_request(
         self,
@@ -82,8 +86,122 @@ class Engine:
         self.waiting.append(state)
         return request_id
 
-    def step(self) -> None:
-        raise NotImplementedError("Engine.step is implemented in the scheduler milestones.")
+    def step(
+        self,
+        *,
+        stream_callback: StreamCallback | None = None,
+        batch_callback: BatchCallback | None = None,
+    ) -> bool:
+        if self.config.scheduler != "continuous":
+            raise ValueError("Engine.step currently requires EngineConfig.scheduler='continuous'.")
+        if self.config.kv_cache != "none":
+            raise ValueError("Phase 4 continuous batching currently requires kv_cache='none'.")
+        if not self.waiting and not self.running:
+            return False
+
+        scheduler = ContinuousScheduler(self.config.scheduler_policy)
+        plan = scheduler.schedule(
+            waiting=self.waiting,
+            running=self.running,
+            kv_cache=None,
+            budget=ScheduleBudget(
+                max_num_seqs=self.config.max_num_seqs,
+                max_num_batched_tokens=self.config.max_num_batched_tokens,
+            ),
+        )
+        if not plan.request_ids:
+            return False
+
+        iteration = self.iteration
+        self.iteration += 1
+        states = [self._running_state(request_id) for request_id in plan.request_ids]
+        now_ns = time.monotonic_ns()
+        for state in states:
+            if state.metrics.first_scheduled_time_ns is None:
+                state.metrics.first_scheduled_time_ns = now_ns
+            if state.num_output_tokens == 0 and state.metrics.prefill_start_time_ns is None:
+                state.status = RequestStatus.PREFILL
+                state.metrics.prefill_start_time_ns = now_ns
+            else:
+                state.status = RequestStatus.DECODE
+
+        self._emit_plan_batch(
+            batch_callback,
+            event="iteration_start",
+            iteration=iteration,
+            plan=plan,
+        )
+        runner = self._model_runner()
+        logits_batch = runner.next_token_logits_batch(
+            plan.input_token_ids,
+            pad_token_id=self._default_pad_token_id(),
+        )
+        for row, state in enumerate(states):
+            if state.num_output_tokens == 0:
+                prefill_end_ns = time.monotonic_ns()
+                state.metrics.prefill_end_time_ns = prefill_end_ns
+                state.metrics.first_token_time_ns = prefill_end_ns
+                state.status = RequestStatus.DECODE
+
+            next_token_id = self._sample(logits_batch[row], state.sampling_params)
+            state.output_token_ids.append(next_token_id)
+            token_time_ns = time.monotonic_ns()
+            state.metrics.last_token_time_ns = token_time_ns
+            if stream_callback is not None:
+                stream_callback(
+                    StreamEvent(
+                        request_id=state.request_id,
+                        token_id=next_token_id,
+                        token_index=state.num_output_tokens - 1,
+                        timestamp_ns=token_time_ns,
+                    )
+                )
+
+            stop_token_ids = self._stop_token_ids(state.sampling_params)
+            if next_token_id in stop_token_ids:
+                self._finish_continuous_state(state, stop_reason="eos_token")
+            elif state.num_output_tokens >= state.max_new_tokens:
+                self._finish_continuous_state(state, stop_reason="max_tokens")
+
+        self._emit_plan_batch(
+            batch_callback,
+            event="iteration_end",
+            iteration=iteration,
+            plan=plan,
+        )
+        return True
+
+    def generate_continuous(
+        self,
+        requests: list[tuple[list[int], SamplingParams | None]],
+        *,
+        request_ids: list[str] | None = None,
+        stream_callback: StreamCallback | None = None,
+        batch_callback: BatchCallback | None = None,
+    ) -> list[list[int]]:
+        if self.config.scheduler != "continuous":
+            raise ValueError("EngineConfig.scheduler must be 'continuous' for continuous batching.")
+        if request_ids is not None and len(request_ids) != len(requests):
+            raise ValueError("request_ids length must match requests length")
+        before_finished = len(self.finished)
+        for index, (prompt_token_ids, sampling_params) in enumerate(requests):
+            self.add_request(
+                prompt_token_ids,
+                sampling_params,
+                request_id=request_ids[index] if request_ids is not None else None,
+            )
+        while self.step(stream_callback=stream_callback, batch_callback=batch_callback):
+            pass
+        states = self.finished[before_finished : before_finished + len(requests)]
+        if len(states) != len(requests):
+            raise RuntimeError("continuous generation finished state count mismatch")
+        states_by_id = {state.request_id: state for state in states}
+        ordered_states = (
+            [states_by_id[request_id] for request_id in request_ids]
+            if request_ids is not None
+            else states
+        )
+        return [list(state.output_token_ids) for state in ordered_states]
 
     def generate(
         self,
@@ -342,6 +460,21 @@ class Engine:
         self.finished = [state for state in self.finished if id(state) not in state_ids]
         self.finished.extend(states)
 
+    def _finish_continuous_state(self, state: RequestState, *, stop_reason: str) -> None:
+        state.stop_reason = stop_reason
+        if state.metrics.last_token_time_ns is None:
+            state.metrics.last_token_time_ns = time.monotonic_ns()
+        state.status = RequestStatus.FINISHED
+        if state in self.running:
+            self.running.remove(state)
+        self.finished.append(state)
+
+    def _running_state(self, request_id: str) -> RequestState:
+        for state in self.running:
+            if state.request_id == request_id:
+                return state
+        raise RuntimeError(f"scheduled request is not running: {request_id}")
+
     def _emit_batch(
         self,
         callback: BatchCallback | None,
@@ -358,6 +491,37 @@ class Engine:
                 iteration=iteration,
                 timestamp_ns=time.monotonic_ns(),
                 metadata=_static_batch_metadata(states),
+            )
+        )
+
+    def _emit_plan_batch(
+        self,
+        callback: BatchCallback | None,
+        *,
+        event: str,
+        iteration: int,
+        plan: BatchPlan,
+    ) -> None:
+        if callback is None:
+            return
+        callback(
+            BatchEvent(
+                event=event,
+                iteration=iteration,
+                timestamp_ns=time.monotonic_ns(),
+                metadata={
+                    "batch_kind": plan.kind.value
+                    if isinstance(plan.kind, BatchKind)
+                    else str(plan.kind),
+                    "batch_size": plan.batch_size,
+                    "request_ids": plan.request_ids,
+                    "num_prefill_tokens": plan.num_prefill_tokens,
+                    "num_decode_tokens": plan.num_decode_tokens,
+                    "num_running_reqs": len(self.running),
+                    "num_waiting_reqs": len(self.waiting),
+                    **_batch_plan_padding_metadata(plan),
+                    **plan.metadata,
+                },
             )
         )
 
@@ -453,3 +617,14 @@ def _static_batch_metadata(states: list[RequestState]) -> dict[str, object]:
         "padded_tokens": batch_size * max_len - real_tokens,
     }
 
+
+def _batch_plan_padding_metadata(plan: BatchPlan) -> dict[str, object]:
+    lengths = [len(token_ids) for token_ids in plan.input_token_ids]
+    max_len = max(lengths, default=0)
+    real_tokens = sum(lengths)
+    return {
+        "max_tokens_per_slot": max_len,
+        "real_tokens": real_tokens,
+        "padded_tokens": plan.batch_size * max_len - real_tokens,
+        "inactive_slots": 0,
+    }

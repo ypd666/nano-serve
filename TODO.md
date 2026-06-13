@@ -59,12 +59,12 @@ roadmap; this file is the more operational backlog.
 
 ## M4: Continuous Batching
 
-- [ ] Implement waiting/running/finished queues.
-- [ ] Implement FCFS scheduler.
-- [ ] Implement `Engine.step()`.
-- [ ] Admit new requests during decode.
-- [ ] Free finished requests immediately.
-- [ ] Add batch timeline metric.
+- [x] Implement waiting/running/finished queues.
+- [x] Implement FCFS scheduler.
+- [x] Implement `Engine.step()`.
+- [x] Admit new requests during decode.
+- [x] Free finished requests immediately.
+- [x] Add batch timeline metric.
 - [ ] Benchmark RPS sweep.
 - [ ] Add vLLM and SGLang baseline benchmark scripts once local workloads are
       comparable.

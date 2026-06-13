@@ -7,10 +7,12 @@ feature is explicit and easy to serialize into benchmark artifacts.
 from __future__ import annotations
 
 import os
+from enum import Enum
 from dataclasses import asdict, dataclass, field
-from typing import Literal
+from typing import Literal, cast
 
 from nano_serve.assets import DATASET_PATH_ENV, DEFAULT_MODEL_ID, MODEL_PATH_ENV
+from nano_serve.scheduler.policies import SchedulerPolicy
 
 
 SchedulerKind = Literal["single", "static_batch", "continuous", "chunked_prefill"]
@@ -51,6 +53,7 @@ class EngineConfig:
         default_factory=lambda: os.environ.get(DATASET_PATH_ENV)
     )
     scheduler: SchedulerKind = "single"
+    scheduler_policy: SchedulerPolicy = SchedulerPolicy.FCFS
     kv_cache: KVCacheKind = "none"
     attention_backend: AttentionBackendKind = "torch_naive"
     sampler: SamplerKind = "greedy"
@@ -64,4 +67,14 @@ class EngineConfig:
     benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        return cast(dict[str, object], _jsonable(asdict(self)))
+
+
+def _jsonable(value: object) -> object:
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return value
