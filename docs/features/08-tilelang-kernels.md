@@ -133,6 +133,14 @@ python scripts/phase7_remote_tilelang.py \
   --fetch-dir runs/phase7-remote
 ```
 
+Validated H100 artifact:
+
+- `runs/phase7-remote/20260613T103050.114570Z`
+- `paged_decode_attention`: TileLang `1.699 ms`, torch gather `1.925 ms`,
+  `speedup_vs_torch_gather=1.13`, `max_abs_diff=1.22e-4`.
+- Simple kernels use `backend="tilelang"` in the same run. Maximum recorded
+  simple-kernel diff is `3.91e-3` for SiLU-mul on `float16`.
+
 ## Exit Criteria
 
 - The first TileLang paged decode attention kernel beats the torch gather

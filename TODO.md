@@ -82,10 +82,10 @@ roadmap; this file is the more operational backlog.
 ## M7: TileLang Kernels
 
 - [x] Add TileLang dev dependency option.
-- [ ] Implement RMSNorm kernel.
-- [ ] Implement RoPE kernel.
-- [ ] Implement SiLU-mul kernel.
-- [ ] Implement paged decode attention kernel.
+- [x] Implement RMSNorm kernel.
+- [x] Implement RoPE kernel.
+- [x] Implement SiLU-mul kernel.
+- [x] Implement paged decode attention kernel.
 - [x] Add NCU profile script.
 - [x] Compare with torch references.
 

@@ -242,12 +242,12 @@ memory-bound。
 
 ### Phase 7: TileLang Kernels
 
-- [ ] Implement TileLang RMSNorm.
-- [ ] Implement TileLang RoPE.
-- [ ] Implement TileLang SiLU-mul.
-- [ ] Implement TileLang sampling helper.
-- [ ] Implement TileLang paged decode attention.
-- [ ] Compare TileLang paged attention with torch gather fallback.
+- [x] Implement TileLang RMSNorm.
+- [x] Implement TileLang RoPE.
+- [x] Implement TileLang SiLU-mul.
+- [x] Implement TileLang sampling helper.
+- [x] Implement TileLang paged decode attention.
+- [x] Compare TileLang paged attention with torch gather fallback.
 - [ ] Profile with Nsight Compute.
 - [ ] Record SM activity and HBM bandwidth.
 
