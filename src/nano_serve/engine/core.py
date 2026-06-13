@@ -16,6 +16,7 @@ from nano_serve.sampling.base import SamplingParams
 from nano_serve.sampling.greedy import GreedySampler
 from nano_serve.sampling.topk_topp import TopKTopPSampler
 from nano_serve.scheduler.base import ScheduleBudget
+from nano_serve.scheduler.chunked_prefill import ChunkedPrefillScheduler
 from nano_serve.scheduler.continuous import ContinuousScheduler
 
 
@@ -92,6 +93,11 @@ class Engine:
         stream_callback: StreamCallback | None = None,
         batch_callback: BatchCallback | None = None,
     ) -> bool:
+        if self.config.scheduler == "chunked_prefill":
+            return self._step_chunked_prefill(
+                stream_callback=stream_callback,
+                batch_callback=batch_callback,
+            )
         if self.config.scheduler != "continuous":
             raise ValueError("Engine.step currently requires EngineConfig.scheduler='continuous'.")
         if self.config.kv_cache != "none":
@@ -171,6 +177,79 @@ class Engine:
         )
         return True
 
+    def _step_chunked_prefill(
+        self,
+        *,
+        stream_callback: StreamCallback | None = None,
+        batch_callback: BatchCallback | None = None,
+    ) -> bool:
+        if self.config.kv_cache not in {"none", "contiguous"}:
+            raise ValueError("chunked prefill currently supports kv_cache='none' or 'contiguous'.")
+        if not self.waiting and not self.running:
+            return False
+
+        scheduler = ChunkedPrefillScheduler()
+        plan = scheduler.schedule(
+            waiting=self.waiting,
+            running=self.running,
+            kv_cache=None,
+            budget=ScheduleBudget(
+                max_num_seqs=self.config.max_num_seqs,
+                max_num_batched_tokens=self.config.max_num_batched_tokens,
+                max_prefill_tokens=self.config.max_prefill_chunk_tokens,
+            ),
+        )
+        if not plan.request_ids:
+            return False
+
+        iteration = self.iteration
+        self.iteration += 1
+        states = [self._running_state(request_id) for request_id in plan.request_ids]
+        prefill_chunks = _prefill_chunks_by_request(plan)
+        now_ns = time.monotonic_ns()
+        for state in states:
+            if state.metrics.first_scheduled_time_ns is None:
+                state.metrics.first_scheduled_time_ns = now_ns
+            if state.request_id in prefill_chunks:
+                state.status = RequestStatus.PREFILL
+                if state.metrics.prefill_start_time_ns is None:
+                    state.metrics.prefill_start_time_ns = now_ns
+            else:
+                state.status = RequestStatus.DECODE
+
+        self._emit_plan_batch(
+            batch_callback,
+            event="iteration_start",
+            iteration=iteration,
+            plan=plan,
+        )
+        runner = self._model_runner()
+        for state in states:
+            if state.is_terminal:
+                continue
+            chunk = prefill_chunks.get(state.request_id)
+            if chunk is not None:
+                self._run_prefill_chunk(
+                    runner,
+                    state,
+                    chunk,
+                    stream_callback=stream_callback,
+                )
+                continue
+            self._run_decode_step(
+                runner,
+                state,
+                stream_callback=stream_callback,
+            )
+
+        self._emit_plan_batch(
+            batch_callback,
+            event="iteration_end",
+            iteration=iteration,
+            plan=plan,
+        )
+        return True
+
     def generate_continuous(
         self,
         requests: list[tuple[list[int], SamplingParams | None]],
@@ -195,6 +274,40 @@ class Engine:
         states = self.finished[before_finished : before_finished + len(requests)]
         if len(states) != len(requests):
             raise RuntimeError("continuous generation finished state count mismatch")
+        states_by_id = {state.request_id: state for state in states}
+        ordered_states = (
+            [states_by_id[request_id] for request_id in request_ids]
+            if request_ids is not None
+            else states
+        )
+        return [list(state.output_token_ids) for state in ordered_states]
+
+    def generate_chunked_prefill(
+        self,
+        requests: list[tuple[list[int], SamplingParams | None]],
+        *,
+        request_ids: list[str] | None = None,
+        stream_callback: StreamCallback | None = None,
+        batch_callback: BatchCallback | None = None,
+    ) -> list[list[int]]:
+        if self.config.scheduler != "chunked_prefill":
+            raise ValueError(
+                "EngineConfig.scheduler must be 'chunked_prefill' for chunked prefill."
+            )
+        if request_ids is not None and len(request_ids) != len(requests):
+            raise ValueError("request_ids length must match requests length")
+        before_finished = len(self.finished)
+        for index, (prompt_token_ids, sampling_params) in enumerate(requests):
+            self.add_request(
+                prompt_token_ids,
+                sampling_params,
+                request_id=request_ids[index] if request_ids is not None else None,
+            )
+        while self.step(stream_callback=stream_callback, batch_callback=batch_callback):
+            pass
+        states = self.finished[before_finished : before_finished + len(requests)]
+        if len(states) != len(requests):
+            raise RuntimeError("chunked prefill finished state count mismatch")
         states_by_id = {state.request_id: state for state in states}
         ordered_states = (
             [states_by_id[request_id] for request_id in request_ids]
@@ -468,6 +581,106 @@ class Engine:
         if state in self.running:
             self.running.remove(state)
         self.finished.append(state)
+        runner = self.model_runner
+        free = getattr(runner, "free", None)
+        if callable(free):
+            free(state.request_id)
+
+    def _run_prefill_chunk(
+        self,
+        runner: Any,
+        state: RequestState,
+        chunk: dict[str, int],
+        *,
+        stream_callback: StreamCallback | None,
+    ) -> None:
+        chunk_start = chunk["start"]
+        chunk_end = chunk["end"]
+        final_chunk = chunk_end >= state.num_prompt_tokens
+        prefill_output = runner.prefill_chunk(
+            state.prompt_token_ids,
+            start=chunk_start,
+            end=chunk_end,
+            request_id=state.request_id,
+            max_decode_tokens=state.max_new_tokens,
+            final_chunk=final_chunk,
+        )
+        prefill_metadata = dict(getattr(prefill_output, "metadata", {}))
+        state.block_table = _metadata_block_table(prefill_metadata)
+        state.phase_metadata.append(prefill_metadata)
+        state.prefill_cursor = chunk_end
+        if not final_chunk:
+            state.status = RequestStatus.PREFILL
+            return
+
+        logits = getattr(prefill_output, "logits", None)
+        if logits is None:
+            raise RuntimeError("final prefill chunk must return logits")
+        state.status = RequestStatus.DECODE
+        next_token_id = self._sample(logits[0], state.sampling_params)
+        self._append_sampled_token(
+            state,
+            next_token_id,
+            token_index=0,
+            stream_callback=stream_callback,
+        )
+
+    def _run_decode_step(
+        self,
+        runner: Any,
+        state: RequestState,
+        *,
+        stream_callback: StreamCallback | None,
+    ) -> None:
+        if not state.output_token_ids:
+            raise RuntimeError("decode step requires at least one generated token")
+        decode_index = state.num_output_tokens
+        context_token_ids = [*state.prompt_token_ids, *state.output_token_ids]
+        decode_output = runner.decode(
+            context_token_ids,
+            new_token_id=state.output_token_ids[-1],
+            request_id=state.request_id,
+        )
+        decode_metadata = dict(getattr(decode_output, "metadata", {}))
+        state.block_table = _metadata_block_table(decode_metadata)
+        state.phase_metadata.append(decode_metadata)
+        logits = decode_output.logits
+        next_token_id = self._sample(logits[0], state.sampling_params)
+        self._append_sampled_token(
+            state,
+            next_token_id,
+            token_index=decode_index,
+            stream_callback=stream_callback,
+        )
+
+    def _append_sampled_token(
+        self,
+        state: RequestState,
+        token_id: int,
+        *,
+        token_index: int,
+        stream_callback: StreamCallback | None,
+    ) -> None:
+        state.output_token_ids.append(token_id)
+        token_time_ns = time.monotonic_ns()
+        if state.metrics.first_token_time_ns is None:
+            state.metrics.first_token_time_ns = token_time_ns
+            state.metrics.prefill_end_time_ns = token_time_ns
+        state.metrics.last_token_time_ns = token_time_ns
+        if stream_callback is not None:
+            stream_callback(
+                StreamEvent(
+                    request_id=state.request_id,
+                    token_id=token_id,
+                    token_index=token_index,
+                    timestamp_ns=token_time_ns,
+                )
+            )
+        stop_token_ids = self._stop_token_ids(state.sampling_params)
+        if token_id in stop_token_ids:
+            self._finish_continuous_state(state, stop_reason="eos_token")
+        elif state.num_output_tokens >= state.max_new_tokens:
+            self._finish_continuous_state(state, stop_reason="max_tokens")
 
     def _running_state(self, request_id: str) -> RequestState:
         for state in self.running:
@@ -628,3 +841,22 @@ def _batch_plan_padding_metadata(plan: BatchPlan) -> dict[str, object]:
         "padded_tokens": plan.batch_size * max_len - real_tokens,
         "inactive_slots": 0,
     }
+
+
+def _prefill_chunks_by_request(plan: BatchPlan) -> dict[str, dict[str, int]]:
+    raw_chunks = plan.metadata.get("prefill_chunks")
+    if not isinstance(raw_chunks, list):
+        return {}
+    chunks: dict[str, dict[str, int]] = {}
+    for raw_chunk in raw_chunks:
+        if not isinstance(raw_chunk, dict):
+            continue
+        request_id = raw_chunk.get("request_id")
+        start = raw_chunk.get("start")
+        end = raw_chunk.get("end")
+        if not isinstance(request_id, str):
+            continue
+        if not isinstance(start, int) or not isinstance(end, int):
+            continue
+        chunks[request_id] = {"start": start, "end": end}
+    return chunks

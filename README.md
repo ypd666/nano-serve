@@ -256,13 +256,13 @@ compute-bound; decode is often more memory-bound.
 
 ### Phase 8: Chunked Prefill
 
-- [ ] Add `prefill_cursor` to `RequestState`.
-- [ ] Split long prefill into chunks.
-- [ ] Implement max prefill chunk size.
-- [ ] Implement mixed prefill/decode batch plan.
-- [ ] Implement decode-maximal scheduling.
-- [ ] Benchmark long-prefill interference.
-- [ ] Plot chunk size vs TTFT/TPOT tradeoff.
+- [x] Add `prefill_cursor` to `RequestState`.
+- [x] Split long prefill into chunks.
+- [x] Implement max prefill chunk size.
+- [x] Implement mixed prefill/decode batch plan.
+- [x] Implement decode-maximal scheduling.
+- [x] Benchmark long-prefill interference.
+- [x] Plot chunk size vs TTFT/TPOT tradeoff.
 
 ### Phase 9: Prefix Cache / Radix Cache
 

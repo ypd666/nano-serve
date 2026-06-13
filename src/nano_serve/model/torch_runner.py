@@ -169,6 +169,104 @@ class TorchModelRunner:
             request_id=request_id,
         )
 
+    def prefill_chunk(
+        self,
+        prompt_token_ids: list[int],
+        *,
+        start: int,
+        end: int,
+        request_id: str | None = None,
+        max_decode_tokens: int = 0,
+        final_chunk: bool = False,
+    ) -> PrefillOutput:
+        if not prompt_token_ids:
+            raise ValueError("prompt_token_ids must not be empty")
+        if start < 0 or end <= start or end > len(prompt_token_ids):
+            raise ValueError(f"invalid prefill chunk range: {start}:{end}")
+
+        chunk_token_ids = prompt_token_ids[start:end]
+        if self.kv_cache is None:
+            logits = self.next_token_logits(prompt_token_ids[:end]) if final_chunk else None
+            kv_metadata: dict[str, Any] = {
+                "kv_cache": "none",
+                "kv_sequence_length": 0,
+                "kv_bytes_used": 0,
+            }
+        else:
+            if request_id is None:
+                raise ValueError("request_id is required when kv_cache=contiguous")
+            import torch
+
+            if start == 0:
+                input_ids = torch.tensor(
+                    [chunk_token_ids],
+                    dtype=torch.long,
+                    device=self.model.device,
+                )
+                with torch.inference_mode():
+                    output = self.model.prefill_with_cache(input_ids)
+                remaining_prompt_tokens = len(prompt_token_ids) - end
+                self.kv_cache.allocate_prefill(
+                    request_id,
+                    len(chunk_token_ids),
+                    max_decode_tokens=remaining_prompt_tokens + max_decode_tokens,
+                    layer_states=output.layer_states,
+                )
+                logits = output.logits if final_chunk else None
+            else:
+                if self.kv_cache.sequence_length(request_id) != start:
+                    raise ValueError(
+                        "prefill chunk start must match cached sequence length: "
+                        f"{start} != {self.kv_cache.sequence_length(request_id)}"
+                    )
+                output = None
+                for token_id in chunk_token_ids:
+                    position_offset = self.kv_cache.sequence_length(request_id)
+                    input_ids = torch.tensor(
+                        [[token_id]],
+                        dtype=torch.long,
+                        device=self.model.device,
+                    )
+                    with torch.inference_mode():
+                        output = self.model.decode_with_cache(
+                            input_ids,
+                            layer_states=self.kv_cache.layer_states(request_id),
+                            position_offset=position_offset,
+                        )
+                    self.kv_cache.allocate_decode_slot(request_id)
+                    self.kv_cache.set_layer_states(
+                        request_id,
+                        output.layer_states,
+                        sequence_length=position_offset + 1,
+                    )
+                if output is None:
+                    raise RuntimeError("prefill chunk produced no output")
+                logits = output.logits if final_chunk else None
+
+            stats = self.kv_cache.stats()
+            kv_metadata = {
+                "kv_cache": "contiguous",
+                "kv_sequence_length": self.kv_cache.sequence_length(request_id),
+                "kv_bytes_used": stats.bytes_used,
+                "kv_blocks_used": len(self.kv_cache.get_block_table(request_id)),
+                "kv_fragmentation": stats.fragmentation,
+            }
+        return PrefillOutput(
+            logits=logits,
+            metadata={
+                "phase": "prefill_chunk",
+                "chunk_start": start,
+                "chunk_end": end,
+                "chunk_tokens": end - start,
+                "input_tokens": end,
+                "total_prompt_tokens": len(prompt_token_ids),
+                "final_chunk": final_chunk,
+                "runner": "torch_cached" if self.kv_cache is not None else "torch_full_context",
+                **kv_metadata,
+            },
+            request_id=request_id,
+        )
+
     def decode(
         self,
         context_token_ids: list[int],

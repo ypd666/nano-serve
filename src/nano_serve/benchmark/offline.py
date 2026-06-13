@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from nano_serve.assets import AssetConfig
 from nano_serve.benchmark.datasets import ServingSample, load_sharegpt_dataset
@@ -35,6 +36,7 @@ class OfflineBenchmarkConfig:
     scheduler_policy: SchedulerPolicy = SchedulerPolicy.FCFS
     batch_size: int = 1
     max_num_batched_tokens: int = 4096
+    max_prefill_chunk_tokens: int = 1024
 
 
 @dataclass(frozen=True)
@@ -125,6 +127,7 @@ def run_offline_benchmark(config: OfflineBenchmarkConfig) -> dict[str, object]:
         scheduler_policy=config.scheduler_policy,
         max_num_seqs=config.batch_size,
         max_num_batched_tokens=config.max_num_batched_tokens,
+        max_prefill_chunk_tokens=config.max_prefill_chunk_tokens,
     )
     run_config = {
         "run_id": run_id,
@@ -135,6 +138,7 @@ def run_offline_benchmark(config: OfflineBenchmarkConfig) -> dict[str, object]:
         "scheduler_policy": config.scheduler_policy.value,
         "batch_size": config.batch_size,
         "max_num_batched_tokens": config.max_num_batched_tokens,
+        "max_prefill_chunk_tokens": config.max_prefill_chunk_tokens,
         "num_samples": config.num_samples,
         "max_new_tokens": config.max_new_tokens,
         "max_prompt_tokens": config.max_prompt_tokens,
@@ -174,7 +178,7 @@ def run_offline_benchmark(config: OfflineBenchmarkConfig) -> dict[str, object]:
             )
         )
 
-        if config.scheduler == "continuous":
+        if config.scheduler in {"continuous", "chunked_prefill"}:
             continuous_request_summaries, continuous_batch_summary = _run_continuous_batch(
                 samples=dataset.samples,
                 batch_id=0,
@@ -187,7 +191,7 @@ def run_offline_benchmark(config: OfflineBenchmarkConfig) -> dict[str, object]:
             batch_summaries.append(continuous_batch_summary)
 
         for batch_id, samples in enumerate(_sample_batches(dataset.samples, config.batch_size)):
-            if config.scheduler == "continuous":
+            if config.scheduler in {"continuous", "chunked_prefill"}:
                 break
             if config.scheduler == "static_batch":
                 batch_request_summaries, batch_summary = _run_static_batch(
@@ -524,6 +528,9 @@ def _run_continuous_batch(
     batch_events: list[BatchEvent] = []
     before_finished = len(engine.finished)
     batch_start_ns = time.monotonic_ns()
+    event_prefix = (
+        "chunked_prefill" if config.scheduler == "chunked_prefill" else "continuous"
+    )
 
     def stream_callback(event: StreamEvent) -> None:
         stream_events[event.request_id].append(event)
@@ -546,7 +553,7 @@ def _run_continuous_batch(
         batch_events.append(event)
         writer.write(
             Event(
-                f"continuous_{event.event}",
+                f"{event_prefix}_{event.event}",
                 fields={
                     "batch_id": batch_id,
                     "iteration": event.iteration,
@@ -556,12 +563,24 @@ def _run_continuous_batch(
             )
         )
 
-    output_token_ids_batch = engine.generate_continuous(
+    request_batch = cast(
+        list[tuple[list[int], SamplingParams | None]],
         list(zip(prompt_token_ids_batch, sampling_params, strict=True)),
-        request_ids=request_ids,
-        stream_callback=stream_callback,
-        batch_callback=batch_callback,
     )
+    if config.scheduler == "chunked_prefill":
+        output_token_ids_batch = engine.generate_chunked_prefill(
+            request_batch,
+            request_ids=request_ids,
+            stream_callback=stream_callback,
+            batch_callback=batch_callback,
+        )
+    else:
+        output_token_ids_batch = engine.generate_continuous(
+            request_batch,
+            request_ids=request_ids,
+            stream_callback=stream_callback,
+            batch_callback=batch_callback,
+        )
     batch_end_ns = time.monotonic_ns()
     states = engine.finished[before_finished : before_finished + len(samples)]
     if len(states) != len(samples):
@@ -592,7 +611,7 @@ def _run_continuous_batch(
         request_summaries.append(request_summary)
         writer.write(
             Event(
-                "continuous_request_end",
+                f"{event_prefix}_request_end",
                 fields={
                     **request_summary.to_dict(),
                     "request_id": request_id,
@@ -707,15 +726,25 @@ def _validate_offline_config(config: OfflineBenchmarkConfig) -> None:
         raise ValueError("Phase 3 static batching currently requires kv_cache='none'.")
     if config.scheduler == "continuous" and config.kv_cache != "none":
         raise ValueError("Phase 4 continuous batching currently requires kv_cache='none'.")
+    if config.scheduler == "chunked_prefill" and config.kv_cache not in {"none", "contiguous"}:
+        raise ValueError("Phase 8 chunked prefill requires kv_cache='none' or 'contiguous'.")
     if config.max_num_batched_tokens <= 0:
         raise ValueError("max_num_batched_tokens must be positive")
+    if config.max_prefill_chunk_tokens <= 0:
+        raise ValueError("max_prefill_chunk_tokens must be positive")
 
 
 def _effective_batch_size(config: OfflineBenchmarkConfig) -> int:
-    return config.batch_size if config.scheduler in {"static_batch", "continuous"} else 1
+    return (
+        config.batch_size
+        if config.scheduler in {"static_batch", "continuous", "chunked_prefill"}
+        else 1
+    )
 
 
 def _phase_name(config: OfflineBenchmarkConfig) -> str:
+    if config.scheduler == "chunked_prefill":
+        return "phase8"
     if config.scheduler == "continuous":
         return "phase4"
     if config.scheduler == "static_batch":

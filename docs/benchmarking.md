@@ -125,6 +125,26 @@ python scripts/phase7_remote_tilelang.py \
   --fetch-dir runs/phase7-remote
 ```
 
+Phase 8 chunked-prefill benchmarks isolate long-prefill interference with a
+deterministic scheduler simulation:
+
+```bash
+python -m nano_serve.cli phase8-chunked-prefill \
+  --chunk-sizes 128,512,2048 \
+  --long-prompt-tokens 8192 \
+  --decode-requests 8 \
+  --decode-tokens-per-request 128
+```
+
+The run emits `chunked_prefill_iteration_start`,
+`chunked_prefill_iteration_end`, and `chunked_prefill_case` events. Case
+summaries record chunk size, mixed iteration count, prefill chunk count, long
+prompt TTFT, decode TPOT p50/p90/p99, decode stall time, and simulated E2E
+latency. They also record max decode gap to expose rare but severe ITL spikes.
+The sweep includes a no-chunk baseline where chunk size equals the full long
+prompt. When `matplotlib` is installed, the run also writes a
+`chunk_size_frontier.png` artifact for the TTFT/TPOT tradeoff.
+
 ### Online Serving
 
 Simulates request arrival and user-observed latency:

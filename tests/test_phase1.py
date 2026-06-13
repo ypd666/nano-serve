@@ -8,6 +8,7 @@ import pytest
 from nano_serve.assets import load_dotenv
 from nano_serve.engine import Engine, EngineConfig
 from nano_serve.engine.batch import BatchKind, BatchPlan
+from nano_serve.kv_cache.contiguous import ContiguousKVCache, ContiguousKVCacheConfig
 from nano_serve.model import HuggingFaceOracle, TokenizerWrapper
 from nano_serve.model.loader import ModelLoader, ModelSpec
 from nano_serve.model.qwen35 import Qwen35ForCausalLM, Qwen35TextConfig
@@ -114,6 +115,52 @@ def test_qwen35_cached_decode_matches_full_context_small_model() -> None:
         )
 
     torch.testing.assert_close(cached.logits, full_logits, rtol=1e-4, atol=1e-4)
+
+
+def test_torch_runner_prefill_chunk_matches_full_context_small_model() -> None:
+    import torch
+
+    torch.manual_seed(1)
+    model = Qwen35ForCausalLM(
+        _small_qwen_config(),
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+    model.eval()
+    runner = TorchModelRunner(
+        model=model,
+        kv_cache=ContiguousKVCache(
+            ContiguousKVCacheConfig(
+                max_model_len=16,
+                num_layers=model.config.num_hidden_layers,
+                block_size=4,
+            )
+        ),
+    )
+    token_ids = [1, 2, 3, 4, 5]
+    full_logits = runner.next_token_logits(token_ids)
+
+    first_chunk = runner.prefill_chunk(
+        token_ids,
+        start=0,
+        end=2,
+        request_id="req",
+        max_decode_tokens=1,
+        final_chunk=False,
+    )
+    final_chunk = runner.prefill_chunk(
+        token_ids,
+        start=2,
+        end=5,
+        request_id="req",
+        max_decode_tokens=1,
+        final_chunk=True,
+    )
+
+    assert first_chunk.logits is None
+    assert runner.kv_cache is not None
+    assert runner.kv_cache.sequence_length("req") == 5
+    torch.testing.assert_close(final_chunk.logits, full_logits, rtol=1e-4, atol=1e-4)
 
 
 @pytest.mark.skipif(

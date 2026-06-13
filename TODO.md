@@ -91,13 +91,13 @@ roadmap; this file is the more operational backlog.
 
 ## M8-M9: Chunked Prefill and Prefix Cache
 
-- [ ] Add `prefill_cursor`.
-- [ ] Add prefill chunk budget.
-- [ ] Add mixed prefill/decode batch plan.
+- [x] Add `prefill_cursor`.
+- [x] Add prefill chunk budget.
+- [x] Add mixed prefill/decode batch plan.
 - [ ] Add block hash prefix cache.
 - [ ] Add radix cache prototype.
 - [ ] Add shared-prefix workload.
-- [ ] Plot TTFT/TPOT frontier.
+- [x] Plot TTFT/TPOT frontier.
 
 ## M10-M12: Overlap, Spec Decode, Advanced Features
 
