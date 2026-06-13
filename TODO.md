@@ -51,11 +51,11 @@ roadmap; this file is the more operational backlog.
 
 ## M3: Static Batching
 
-- [ ] Batch prefill with padding.
-- [ ] Batch decode.
-- [ ] Track inactive slots.
-- [ ] Track padding waste.
-- [ ] Benchmark equal-length and mixed-length prompts.
+- [x] Batch prefill with padding.
+- [x] Batch decode.
+- [x] Track inactive slots.
+- [x] Track padding waste.
+- [x] Benchmark equal-length and mixed-length prompts.
 
 ## M4: Continuous Batching
 

@@ -17,6 +17,7 @@ def render_markdown_report(summary: dict[str, object]) -> str:
         f"- Run ID: `{summary.get('run_id', 'unknown')}`",
         f"- Phase: `{summary.get('phase', 'unknown')}`",
         f"- Workload: `{summary.get('workload', 'unknown')}`",
+        f"- Scheduler: `{summary.get('scheduler', 'unknown')}`",
         f"- KV cache: `{summary.get('kv_cache', 'unknown')}`",
         f"- Status: `{summary.get('status', 'unknown')}`",
         f"- Samples loaded: `{summary.get('samples_loaded', 0)}`",
@@ -37,6 +38,15 @@ def render_markdown_report(summary: dict[str, object]) -> str:
                 f"- Total tokens/s: `{summary.get('total_tokens_per_sec')}`",
                 f"- Requests/s: `{summary.get('requests_per_sec')}`",
                 f"- Max KV bytes used: `{summary.get('max_kv_bytes_used', 0)}`",
+            ]
+        )
+    if summary.get("batch_count", 0):
+        lines.extend(
+            [
+                f"- Batch count: `{summary.get('batch_count')}`",
+                f"- Max batch size: `{summary.get('max_batch_size')}`",
+                f"- Total padded tokens: `{summary.get('total_padded_tokens')}`",
+                f"- Total inactive slot steps: `{summary.get('total_inactive_slot_steps')}`",
             ]
         )
 

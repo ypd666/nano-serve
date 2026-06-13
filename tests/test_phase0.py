@@ -7,6 +7,7 @@ from nano_serve.benchmark.compare import compare_runs, render_compare_markdown
 from nano_serve.benchmark.datasets import load_sharegpt_dataset
 from nano_serve.benchmark.offline import OfflineBenchmarkConfig, run_offline_benchmark
 from nano_serve.benchmark.phase0 import Phase0SmokeConfig, run_phase0_smoke
+from nano_serve.engine.core import BatchEvent
 from nano_serve.cli import main
 from nano_serve.observability import Event, JSONLEventWriter, read_jsonl_events
 
@@ -149,6 +150,58 @@ def test_phase1_offline_benchmark_writes_artifacts(tmp_path: Path, monkeypatch) 
     assert events[7]["fields"]["kv_sequence_length"] == 0
 
 
+def test_static_batch_offline_benchmark_writes_batch_events(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    model_path = _write_fake_model(tmp_path / "model")
+    dataset_path = _write_fake_dataset(tmp_path / "sharegpt.json")
+    output_dir = tmp_path / "phase3-runs"
+    monkeypatch.setenv("NANO_SERVE_MODEL_PATH", str(model_path))
+    monkeypatch.setenv("NANO_SERVE_DATASET_PATH", str(dataset_path))
+    monkeypatch.setattr("nano_serve.benchmark.offline.TokenizerWrapper", _FakeTokenizer)
+    monkeypatch.setattr("nano_serve.benchmark.offline.Engine", _FakeStaticBatchEngine)
+
+    summary = run_offline_benchmark(
+        OfflineBenchmarkConfig(
+            output_dir=output_dir,
+            num_samples=2,
+            max_new_tokens=2,
+            max_prompt_tokens=4,
+            scheduler="static_batch",
+            batch_size=2,
+        )
+    )
+
+    assert summary["status"] == "ok"
+    assert summary["phase"] == "phase3"
+    assert summary["scheduler"] == "static_batch"
+    assert summary["batch_count"] == 1
+    assert summary["max_batch_size"] == 2
+    assert summary["total_padded_tokens"] == 2
+    assert summary["total_inactive_slot_steps"] == 1
+
+    events = read_jsonl_events(Path(summary["artifacts"]["events"]))
+    assert [event["name"] for event in events] == [
+        "run_start",
+        "platform_detected",
+        "dataset_load_end",
+        "batch_prefill_start",
+        "batch_prefill_end",
+        "stream_token",
+        "stream_token",
+        "batch_decode_step_start",
+        "batch_decode_step_end",
+        "stream_token",
+        "batch_end",
+        "batch_request_end",
+        "batch_request_end",
+        "run_end",
+    ]
+    assert events[3]["fields"]["padded_tokens"] == 1
+    assert events[7]["fields"]["inactive_slots"] == 1
+
+
 def test_compare_runs(tmp_path: Path) -> None:
     base = _write_summary(tmp_path / "base", "base", samples_loaded=2)
     candidate = _write_summary(tmp_path / "candidate", "candidate", samples_loaded=5)
@@ -288,10 +341,80 @@ class _FakeEngine:
         return [3, 4]
 
 
+class _FakeStaticBatchEngine:
+    def __init__(self, config: object) -> None:
+        del config
+        self.finished: list[_FakeStaticState] = []
+
+    def generate_static_batch(
+        self,
+        requests: list[tuple[list[int], object]],
+        *,
+        request_ids: list[str],
+        stream_callback: object = None,
+        batch_callback: object = None,
+    ) -> list[list[int]]:
+        del requests
+        if callable(batch_callback):
+            batch_callback(_fake_batch_event("prefill_start", 0, active=2, inactive=0, padded=1))
+            batch_callback(_fake_batch_event("prefill_end", 0, active=2, inactive=0, padded=1))
+        if callable(stream_callback):
+            stream_callback(_FakeStreamEvent(request_id=request_ids[0], token_id=15, token_index=0))
+            stream_callback(_FakeStreamEvent(request_id=request_ids[1], token_id=3, token_index=0))
+        if callable(batch_callback):
+            batch_callback(
+                _fake_batch_event("decode_step_start", 1, active=1, inactive=1, padded=1)
+            )
+            batch_callback(
+                _fake_batch_event("decode_step_end", 1, active=1, inactive=1, padded=1)
+            )
+        if callable(stream_callback):
+            stream_callback(_FakeStreamEvent(request_id=request_ids[1], token_id=4, token_index=1))
+        if callable(batch_callback):
+            batch_callback(_fake_batch_event("batch_end", 2, active=0, inactive=2, padded=0))
+        self.finished.extend(
+            [
+                _FakeStaticState(request_id=request_ids[0], stop_reason="eos_token"),
+                _FakeStaticState(request_id=request_ids[1], stop_reason="max_tokens"),
+            ]
+        )
+        return [[15], [3, 4]]
+
+
+def _fake_batch_event(
+    event: str,
+    iteration: int,
+    *,
+    active: int,
+    inactive: int,
+    padded: int,
+) -> BatchEvent:
+    return BatchEvent(
+        event=event,
+        iteration=iteration,
+        timestamp_ns=0,
+        metadata={
+            "batch_size": 2,
+            "active_slots": active,
+            "inactive_slots": inactive,
+            "max_tokens_per_slot": 4,
+            "real_tokens": 7,
+            "padded_tokens": padded,
+        },
+    )
+
+
 class _FakeStreamEvent:
     request_id = "fake-request"
 
-    def __init__(self, *, token_id: int, token_index: int) -> None:
+    def __init__(
+        self,
+        *,
+        token_id: int,
+        token_index: int,
+        request_id: str = "fake-request",
+    ) -> None:
+        self.request_id = request_id
         self.token_id = token_id
         self.token_index = token_index
         self.timestamp_ns = 0
@@ -314,3 +437,11 @@ class _FakePhaseEvent:
         self.token_index = token_index
         self.timestamp_ns = 0
         self.metadata = metadata
+
+
+class _FakeStaticState:
+    metrics = _FakeMetrics()
+
+    def __init__(self, *, request_id: str, stop_reason: str) -> None:
+        self.request_id = request_id
+        self.stop_reason = stop_reason

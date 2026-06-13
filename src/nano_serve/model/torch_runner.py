@@ -84,6 +84,43 @@ class TorchModelRunner:
         with torch.inference_mode():
             return self.model.next_token_logits(input_ids)
 
+    def next_token_logits_batch(
+        self,
+        token_ids_batch: list[list[int]],
+        *,
+        pad_token_id: int = 0,
+    ):
+        if not token_ids_batch:
+            raise ValueError("token_ids_batch must not be empty")
+        if any(not token_ids for token_ids in token_ids_batch):
+            raise ValueError("token_ids_batch must contain non-empty requests")
+
+        import torch
+
+        lengths = torch.tensor(
+            [len(token_ids) for token_ids in token_ids_batch],
+            dtype=torch.long,
+            device=self.model.device,
+        )
+        max_len = int(lengths.max().item())
+        input_ids = torch.full(
+            (len(token_ids_batch), max_len),
+            int(pad_token_id),
+            dtype=torch.long,
+            device=self.model.device,
+        )
+        for index, token_ids in enumerate(token_ids_batch):
+            input_ids[index, : len(token_ids)] = torch.tensor(
+                token_ids,
+                dtype=torch.long,
+                device=self.model.device,
+            )
+
+        with torch.inference_mode():
+            logits = self.model(input_ids)
+        batch_indices = torch.arange(len(token_ids_batch), device=self.model.device)
+        return logits[batch_indices, lengths - 1, :]
+
     def prefill(
         self,
         prompt_token_ids: list[int],

@@ -40,6 +40,20 @@ Both runs emit the same request latency metrics. The contiguous run also emits
 `kv_sequence_length`, `kv_blocks_used`, `kv_bytes_used`, and
 `kv_fragmentation` in phase events and request summaries.
 
+Phase 3 static batching ablations use the same offline runner with different
+schedulers:
+
+```bash
+python -m nano_serve.cli phase1-offline --scheduler single --kv-cache none
+python -m nano_serve.cli phase1-offline --scheduler static_batch --batch-size 4 --kv-cache none
+```
+
+The static-batch run emits `batch_prefill_start/end`,
+`batch_decode_step_start/end`, `batch_end`, and `batch_request_end` events.
+Batch summaries record `total_padded_tokens`, `total_inactive_slot_steps`,
+`model_invocations`, and `decode_invocations` so fixed-batch waste can be
+compared against the single-request baseline.
+
 ### Online Serving
 
 Simulates request arrival and user-observed latency:

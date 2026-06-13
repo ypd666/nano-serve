@@ -199,13 +199,13 @@ memory-bound。
 
 ### Phase 3: Static Batching
 
-- [ ] Implement batched prefill.
-- [ ] Implement batched decode.
-- [ ] Implement per-request stop condition.
-- [ ] Support inactive finished slots.
-- [ ] Measure padding waste.
-- [ ] Measure inactive slot waste.
-- [ ] Benchmark equal-length vs mixed-length batches.
+- [x] Implement batched prefill.
+- [x] Implement batched decode.
+- [x] Implement per-request stop condition.
+- [x] Support inactive finished slots.
+- [x] Measure padding waste.
+- [x] Measure inactive slot waste.
+- [x] Benchmark equal-length vs mixed-length batches.
 
 ### Phase 4: Continuous Batching
 

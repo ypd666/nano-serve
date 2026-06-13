@@ -162,6 +162,18 @@ def _add_phase1_offline_args(parser: argparse.ArgumentParser) -> None:
         default="none",
         help="KV cache backend for the torch offline benchmark",
     )
+    parser.add_argument(
+        "--scheduler",
+        choices=("single", "static_batch"),
+        default="single",
+        help="scheduler mode for the torch offline benchmark",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="fixed batch size when --scheduler static_batch",
+    )
 
 
 def _assets_env(_: argparse.Namespace) -> int:
@@ -215,6 +227,8 @@ def _phase1_offline(args: argparse.Namespace) -> int:
             max_prompt_tokens=args.max_prompt_tokens,
             workload=args.workload,
             kv_cache=args.kv_cache,
+            scheduler=args.scheduler,
+            batch_size=args.batch_size,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
