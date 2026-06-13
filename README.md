@@ -286,14 +286,14 @@ compute-bound; decode is often more memory-bound.
 
 ### Phase 11: Speculative Decoding
 
-- [ ] Implement greedy draft-model speculative decoding.
-- [ ] Implement target verification.
-- [ ] Implement acceptance/rejection logic.
-- [ ] Update KV cache for accepted tokens.
-- [ ] Add acceptance length metric.
+- [x] Implement greedy draft-model speculative decoding.
+- [x] Implement target verification.
+- [x] Implement acceptance/rejection logic.
+- [x] Update KV cache for accepted tokens.
+- [x] Add acceptance length metric.
 - [ ] Implement sampling speculative decoding.
-- [ ] Implement batched speculative decoding.
-- [ ] Add n-gram speculation.
+- [x] Implement batched speculative decoding.
+- [x] Add n-gram speculation.
 - [ ] Add Medusa-style and EAGLE-style experimental interfaces.
 
 ### Phase 12: Quantization and Advanced Serving Features

@@ -178,6 +178,22 @@ selected shape bucket, padded elements, graph replay count, estimated kernel
 launches, and fallback reason. The run also writes an
 `nsys_profile_command.txt` artifact for Linux NVIDIA profiling.
 
+Phase 11 speculative decoding benchmarks compare friendly and hostile draft
+streams across a gamma sweep:
+
+```bash
+python -m nano_serve.cli phase11-speculative \
+  --gamma-values 1,2,4,8 \
+  --output-tokens 256 \
+  --batch-size 4
+```
+
+The run emits `speculative_iteration`, `speculative_request_end`, and
+`speculative_case` events. Cases record proposed draft tokens, accepted tokens,
+acceptance rate, mean acceptance length, target calls per output token,
+rejections, bonus target tokens, rollback tokens, KV append counts, and
+estimated speedup against greedy target-only decode.
+
 ### Online Serving
 
 Simulates request arrival and user-observed latency:

@@ -14,6 +14,10 @@ from nano_serve.benchmark.phase10 import (
     Phase10OverlapGraphBenchmarkConfig,
     run_phase10_overlap_graph_benchmark,
 )
+from nano_serve.benchmark.phase11 import (
+    Phase11SpeculativeBenchmarkConfig,
+    run_phase11_speculative_benchmark,
+)
 from nano_serve.benchmark.phase5 import Phase5KVBenchmarkConfig, run_phase5_kv_benchmark
 from nano_serve.benchmark.phase6 import (
     Phase6PagedAttentionBenchmarkConfig,
@@ -132,6 +136,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_phase10_overlap_graph_args(phase10)
     phase10.set_defaults(func=_phase10_overlap_graphs)
 
+    phase11 = subcommands.add_parser(
+        "phase11-speculative",
+        help="Run the Phase 11 speculative decoding benchmark.",
+    )
+    _add_phase11_speculative_args(phase11)
+    phase11.set_defaults(func=_phase11_speculative)
+
     bench = subcommands.add_parser("bench", help="Benchmark helper commands.")
     bench_commands = bench.add_subparsers(dest="bench_command")
     bench_dummy = bench_commands.add_parser(
@@ -182,6 +193,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_phase10_overlap_graph_args(bench_overlap_graphs)
     bench_overlap_graphs.set_defaults(func=_phase10_overlap_graphs)
+    bench_speculative = bench_commands.add_parser(
+        "speculative",
+        help="Alias for the Phase 11 speculative decoding benchmark.",
+    )
+    _add_phase11_speculative_args(bench_speculative)
+    bench_speculative.set_defaults(func=_phase11_speculative)
     bench_compare = bench_commands.add_parser(
         "compare",
         help="Compare two benchmark run summaries or run directories.",
@@ -498,6 +515,35 @@ def _add_phase10_overlap_graph_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--seed", type=int, default=0, help="random seed")
 
 
+def _add_phase11_speculative_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("runs/phase11"),
+        help="directory for run artifacts",
+    )
+    parser.add_argument(
+        "--gamma-values",
+        default="1,2,4,8",
+        help="comma-separated speculative gamma values to sweep",
+    )
+    parser.add_argument("--output-tokens", type=int, default=256, help="tokens per request")
+    parser.add_argument("--batch-size", type=int, default=4, help="requests per case")
+    parser.add_argument("--prompt-tokens", type=int, default=16, help="prompt tokens")
+    parser.add_argument(
+        "--target-step-time-ms",
+        type=float,
+        default=1.0,
+        help="simulated target model time per verification call",
+    )
+    parser.add_argument(
+        "--draft-token-time-ms",
+        type=float,
+        default=0.1,
+        help="simulated draft model time per proposed token",
+    )
+
+
 def _assets_env(_: argparse.Namespace) -> int:
     print(env_template())
     return 0
@@ -666,6 +712,22 @@ def _phase10_overlap_graphs(args: argparse.Namespace) -> int:
             enable_torch_compile=not args.disable_torch_compile,
             enable_cuda_graph=not args.disable_cuda_graph,
             seed=args.seed,
+        )
+    )
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
+def _phase11_speculative(args: argparse.Namespace) -> int:
+    summary = run_phase11_speculative_benchmark(
+        Phase11SpeculativeBenchmarkConfig(
+            output_dir=args.output_dir,
+            gamma_values=_parse_int_list(args.gamma_values, name="gamma-values"),
+            output_tokens=args.output_tokens,
+            batch_size=args.batch_size,
+            prompt_tokens=args.prompt_tokens,
+            target_step_time_ms=args.target_step_time_ms,
+            draft_token_time_ms=args.draft_token_time_ms,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))

@@ -104,8 +104,8 @@ roadmap; this file is the more operational backlog.
 - [x] Add tokenizer worker.
 - [x] Add scheduler/model double buffering.
 - [x] Add CUDA graph shape buckets.
-- [ ] Add draft-model speculative decoding.
-- [ ] Add n-gram speculation.
+- [x] Add draft-model speculative decoding.
+- [x] Add n-gram speculation.
 - [ ] Add quantization experiments.
 - [ ] Add LoRA and structured output experiments.
 
