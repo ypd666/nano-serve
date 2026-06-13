@@ -295,12 +295,12 @@ memory-bound。
 
 ### Phase 12: Quantization and Advanced Serving Features
 
-- [ ] Implement FP8/INT8 KV cache experiment.
-- [ ] Implement weight-only INT8 experiment.
-- [ ] Implement weight-only INT4 experiment.
-- [ ] Add LoRA and multi-LoRA batching.
-- [ ] Add grammar/structured output decoding.
-- [ ] Add quality/correctness regression tests.
+- [x] Implement FP8/INT8 KV cache experiment.
+- [x] Implement weight-only INT8 experiment.
+- [x] Implement weight-only INT4 experiment.
+- [x] Add LoRA and multi-LoRA batching.
+- [x] Add grammar/structured output decoding.
+- [x] Add quality/correctness regression tests.
 
 ### Phase 13: Single-Node Distributed
 

@@ -106,8 +106,8 @@ roadmap; this file is the more operational backlog.
 - [x] Add CUDA graph shape buckets.
 - [x] Add draft-model speculative decoding.
 - [x] Add n-gram speculation.
-- [ ] Add quantization experiments.
-- [ ] Add LoRA and structured output experiments.
+- [x] Add quantization experiments.
+- [x] Add LoRA and structured output experiments.
 
 ## M13-M17: Distributed and Production-Like Serving
 

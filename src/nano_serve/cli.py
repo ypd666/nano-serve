@@ -18,6 +18,10 @@ from nano_serve.benchmark.phase11 import (
     Phase11SpeculativeBenchmarkConfig,
     run_phase11_speculative_benchmark,
 )
+from nano_serve.benchmark.phase12 import (
+    Phase12AdvancedBenchmarkConfig,
+    run_phase12_advanced_benchmark,
+)
 from nano_serve.benchmark.phase5 import Phase5KVBenchmarkConfig, run_phase5_kv_benchmark
 from nano_serve.benchmark.phase6 import (
     Phase6PagedAttentionBenchmarkConfig,
@@ -143,6 +147,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_phase11_speculative_args(phase11)
     phase11.set_defaults(func=_phase11_speculative)
 
+    phase12 = subcommands.add_parser(
+        "phase12-advanced",
+        help="Run the Phase 12 quantization, LoRA, and structured output benchmark.",
+    )
+    _add_phase12_advanced_args(phase12)
+    phase12.set_defaults(func=_phase12_advanced)
+
     bench = subcommands.add_parser("bench", help="Benchmark helper commands.")
     bench_commands = bench.add_subparsers(dest="bench_command")
     bench_dummy = bench_commands.add_parser(
@@ -199,6 +210,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_phase11_speculative_args(bench_speculative)
     bench_speculative.set_defaults(func=_phase11_speculative)
+    bench_advanced = bench_commands.add_parser(
+        "advanced",
+        help="Alias for the Phase 12 advanced serving benchmark.",
+    )
+    _add_phase12_advanced_args(bench_advanced)
+    bench_advanced.set_defaults(func=_phase12_advanced)
     bench_compare = bench_commands.add_parser(
         "compare",
         help="Compare two benchmark run summaries or run directories.",
@@ -544,6 +561,20 @@ def _add_phase11_speculative_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_phase12_advanced_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("runs/phase12"),
+        help="directory for run artifacts",
+    )
+    parser.add_argument("--hidden-size", type=int, default=512, help="hidden dimension")
+    parser.add_argument("--rank", type=int, default=8, help="LoRA adapter rank")
+    parser.add_argument("--tokens", type=int, default=1024, help="KV tokens to quantize")
+    parser.add_argument("--batch-size", type=int, default=8, help="LoRA batch size")
+    parser.add_argument("--seed", type=int, default=0, help="random seed")
+
+
 def _assets_env(_: argparse.Namespace) -> int:
     print(env_template())
     return 0
@@ -728,6 +759,21 @@ def _phase11_speculative(args: argparse.Namespace) -> int:
             prompt_tokens=args.prompt_tokens,
             target_step_time_ms=args.target_step_time_ms,
             draft_token_time_ms=args.draft_token_time_ms,
+        )
+    )
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
+def _phase12_advanced(args: argparse.Namespace) -> int:
+    summary = run_phase12_advanced_benchmark(
+        Phase12AdvancedBenchmarkConfig(
+            output_dir=args.output_dir,
+            hidden_size=args.hidden_size,
+            rank=args.rank,
+            tokens=args.tokens,
+            batch_size=args.batch_size,
+            seed=args.seed,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))

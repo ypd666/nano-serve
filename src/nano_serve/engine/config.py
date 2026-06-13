@@ -27,6 +27,9 @@ SamplerKind = Literal["greedy", "topk_topp", "beam"]
 SpecDecodeKind = Literal["none", "draft_model", "ngram", "medusa", "eagle"]
 GraphKind = Literal["none", "torch_compile", "cuda_graph"]
 ParallelMode = Literal["none", "dp", "tp", "pp", "ep", "pd", "af"]
+WeightQuantizationKind = Literal["none", "int8", "int4"]
+KVQuantizationKind = Literal["none", "int8", "fp8"]
+StructuredOutputKind = Literal["none", "json_object"]
 
 
 @dataclass(frozen=True)
@@ -43,6 +46,14 @@ class BenchmarkConfig:
     enable_nvtx: bool = True
     enable_ncu: bool = False
     log_iteration_trace: bool = True
+
+
+@dataclass(frozen=True)
+class AdvancedFeatureConfig:
+    weight_quantization: WeightQuantizationKind = "none"
+    kv_quantization: KVQuantizationKind = "none"
+    lora: bool = False
+    structured_output: StructuredOutputKind = "none"
 
 
 @dataclass(frozen=True)
@@ -64,6 +75,7 @@ class EngineConfig:
     max_prefill_chunk_tokens: int = 1024
     block_size: int = 16
     parallel: ParallelConfig = field(default_factory=ParallelConfig)
+    advanced: AdvancedFeatureConfig = field(default_factory=AdvancedFeatureConfig)
     benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
 
     def to_dict(self) -> dict[str, object]:

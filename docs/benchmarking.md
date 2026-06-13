@@ -194,6 +194,28 @@ acceptance rate, mean acceptance length, target calls per output token,
 rejections, bonus target tokens, rollback tokens, KV append counts, and
 estimated speedup against greedy target-only decode.
 
+Phase 12 advanced feature benchmarks compare reference quantization, LoRA, and
+structured-output paths against float32 torch baselines:
+
+```bash
+python -m nano_serve.cli phase12-advanced \
+  --hidden-size 512 \
+  --rank 8 \
+  --tokens 1024 \
+  --batch-size 8
+```
+
+The run emits `phase12_quant_case`, `phase12_lora_case`, and
+`phase12_structured_case` events. Quantization cases record INT8/INT4
+weight-only bytes, INT8 KV bytes, simulated FP8 KV bytes, memory-saving ratio,
+max/mean absolute error, and elapsed time against float32 references. LoRA
+cases record adapter count, rank, adapter switch count, adapter bytes vs dense
+delta bytes, isolation error, and elapsed time. Structured-output cases record
+accepted/rejected token counts, grammar mask time, final JSON grammar state, and
+a transition trace. The run config records `advanced.weight_quantization`,
+`advanced.kv_quantization`, `advanced.lora`, and
+`advanced.structured_output` flags.
+
 ### Online Serving
 
 Simulates request arrival and user-observed latency:
