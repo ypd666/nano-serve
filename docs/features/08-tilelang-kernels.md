@@ -60,11 +60,13 @@ torch fallback and report TileLang availability. `TilePagedAttention` exposes
 the `tile_paged` attention backend and dispatches decode-one-token CUDA
 float16 paged attention to TileLang when the shape is supported.
 
-The first TileLang paged decode kernel is intentionally narrow: it supports
-decode length 1, CUDA `float16`, positive sequence lengths, GQA/MQA, paged
-K/V shaped `(num_blocks, kv_heads, block_size, head_dim)`, and the benchmark
-shapes used by Phase 6/7. Unsupported shapes still use the torch fallback
-unless the caller requires TileLang, in which case they fail explicitly.
+The first TileLang kernel set is intentionally narrow. RMSNorm, RoPE,
+SiLU-mul, and the sampling filter support CUDA `float16` benchmark tensors and
+fall back to torch elsewhere. The paged decode attention kernel supports decode
+length 1, CUDA `float16`, positive sequence lengths, GQA/MQA, paged K/V shaped
+`(num_blocks, kv_heads, block_size, head_dim)`, and the benchmark shapes used by
+Phase 6/7. Unsupported shapes still use the torch fallback unless the caller
+requires TileLang, in which case they fail explicitly.
 
 The local Windows environment can install the TileLang wheel, but TileLang
 import currently fails during TVM DLL initialization. `phase7-kernels
@@ -87,8 +89,10 @@ host also has an older `/usr/bin/nvcc` that cannot compile `sm_90a`.
 
 This slice reaches the first Phase 7 performance milestone when the H100
 artifact shows the TileLang paged decode kernel beating the torch gather
-reference for at least one documented shape. NCU profiling remains a follow-up
-profiling artifact.
+reference for at least one documented shape. Simple operator kernels are
+correctness and integration kernels first; they are benchmarked against torch
+references but are not required to win every shape. NCU profiling remains a
+follow-up profiling artifact.
 
 ## Benchmarks
 

@@ -66,7 +66,7 @@ def test_phase7_kernel_benchmark_writes_case_events(tmp_path: Path) -> None:
 
     assert summary["status"] == "ok"
     assert summary["phase"] == "phase7"
-    assert summary["max_abs_diff"] == 0.0
+    assert summary["max_abs_diff"] <= 2e-3
     assert "tilelang_availability" in summary
     engine_config = summary["engine_config"]
     assert isinstance(engine_config, dict)

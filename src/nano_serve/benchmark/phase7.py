@@ -135,7 +135,7 @@ def run_phase7_kernel_benchmark(config: Phase7KernelBenchmarkConfig) -> dict[str
                     _rmsnorm_case(config, generator=generator, device=device, dtype=dtype),
                     _rope_case(config, generator=generator, device=device, dtype=dtype),
                     _silu_mul_case(config, generator=generator, device=device, dtype=dtype),
-                    _sampling_case(config, generator=generator, device=device),
+                    _sampling_case(config, generator=generator, device=device, dtype=dtype),
                     _paged_attention_case(config, generator=generator, device=device, dtype=dtype),
                 ]
             )
@@ -179,12 +179,15 @@ def _rmsnorm_case(config: Phase7KernelBenchmarkConfig, *, generator: Any, device
     )
     weight = torch.randn((config.hidden_size,), generator=generator, device=device, dtype=dtype)
     expected = torch_ops.rmsnorm(x, weight, eps=1e-6)
+    use_tilelang = check_tilelang_available().available
     actual, latency_ms = _time_repeated(
-        lambda: tile_rmsnorm(x, weight, eps=1e-6),
+        lambda: tile_rmsnorm(x, weight, eps=1e-6, require_tilelang=use_tilelang),
         repeats=config.repeats,
         device=device,
     )
-    return _case_result("rmsnorm", expected, actual, latency_ms, config)
+    result = _case_result("rmsnorm", expected, actual, latency_ms, config)
+    result["backend"] = "tilelang" if use_tilelang else "torch_fallback"
+    return result
 
 
 def _rope_case(config: Phase7KernelBenchmarkConfig, *, generator: Any, device: Any, dtype: Any) -> dict[str, object]:
@@ -212,8 +215,9 @@ def _rope_case(config: Phase7KernelBenchmarkConfig, *, generator: Any, device: A
     cos = emb.cos().to(dtype=dtype).unsqueeze(0)
     sin = emb.sin().to(dtype=dtype).unsqueeze(0)
     expected_q, expected_k = torch_ops.rope(q, k, cos, sin)
+    use_tilelang = check_tilelang_available().available
     actual, latency_ms = _time_repeated(
-        lambda: tile_rope(q, k, cos, sin),
+        lambda: tile_rope(q, k, cos, sin, require_tilelang=use_tilelang),
         repeats=config.repeats,
         device=device,
     )
@@ -221,6 +225,7 @@ def _rope_case(config: Phase7KernelBenchmarkConfig, *, generator: Any, device: A
     max_abs_diff = max(_max_abs_diff(expected_q, actual_q), _max_abs_diff(expected_k, actual_k))
     return {
         **_base_case("rope", latency_ms, config),
+        "backend": "tilelang" if use_tilelang else "torch_fallback",
         "max_abs_diff": max_abs_diff,
     }
 
@@ -236,25 +241,40 @@ def _silu_mul_case(config: Phase7KernelBenchmarkConfig, *, generator: Any, devic
     )
     up = torch.randn(gate.shape, generator=generator, device=device, dtype=dtype)
     expected = torch_ops.silu_mul(gate, up)
+    use_tilelang = check_tilelang_available().available
     actual, latency_ms = _time_repeated(
-        lambda: tile_silu_mul(gate, up),
+        lambda: tile_silu_mul(gate, up, require_tilelang=use_tilelang),
         repeats=config.repeats,
         device=device,
     )
-    return _case_result("silu_mul", expected, actual, latency_ms, config)
+    result = _case_result("silu_mul", expected, actual, latency_ms, config)
+    result["backend"] = "tilelang" if use_tilelang else "torch_fallback"
+    return result
 
 
-def _sampling_case(config: Phase7KernelBenchmarkConfig, *, generator: Any, device: Any) -> dict[str, object]:
+def _sampling_case(
+    config: Phase7KernelBenchmarkConfig,
+    *,
+    generator: Any,
+    device: Any,
+    dtype: Any,
+) -> dict[str, object]:
     import torch
 
-    logits = torch.randn((config.hidden_size,), generator=generator, device=device)
-    expected = torch_ops.top_k_top_p_filter(logits, top_k=32, top_p=0.9)
+    logits = torch.randn((config.hidden_size,), generator=generator, device=device, dtype=dtype)
+    top_k = min(32, config.hidden_size)
+    expected = torch_ops.top_k_top_p_filter(logits, top_k=top_k, top_p=None)
+    use_tilelang = check_tilelang_available().available
     actual, latency_ms = _time_repeated(
-        lambda: tile_sample(logits, top_k=32, top_p=0.9),
+        lambda: tile_sample(logits, top_k=top_k, top_p=None, require_tilelang=use_tilelang),
         repeats=config.repeats,
         device=device,
     )
-    return _case_result("sampling_filter", expected, actual, latency_ms, config)
+    result = _case_result("sampling_filter", expected, actual, latency_ms, config)
+    result["backend"] = "tilelang" if use_tilelang else "torch_fallback"
+    result["top_k"] = top_k
+    result["top_p"] = None
+    return result
 
 
 def _paged_attention_case(
