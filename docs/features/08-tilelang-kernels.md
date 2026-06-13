@@ -51,14 +51,20 @@ system-level benchmarks can explain end-to-end impact.
 ## Current Implementation Slice
 
 Phase 7 currently provides the integration harness, correctness reference path,
-and benchmark/profiling artifacts needed to develop real TileLang kernels
-without breaking CPU-only or Windows development.
+benchmark/profiling artifacts, and the first real TileLang paged decode
+attention kernel without breaking CPU-only or Windows development.
 
 The `kernels.tilelang` package exposes guarded entrypoints for RMSNorm, RoPE,
 SiLU-mul, sampling filter, and paged decode attention. These entrypoints keep a
 torch fallback and report TileLang availability. `TilePagedAttention` exposes
-the future `tile_paged` attention backend while delegating to the Phase 6 torch
-gather reference until real TileLang kernels are implemented.
+the `tile_paged` attention backend and dispatches decode-one-token CUDA
+float16 paged attention to TileLang when the shape is supported.
+
+The first TileLang paged decode kernel is intentionally narrow: it supports
+decode length 1, CUDA `float16`, positive sequence lengths, GQA/MQA, paged
+K/V shaped `(num_blocks, kv_heads, block_size, head_dim)`, and the benchmark
+shapes used by Phase 6/7. Unsupported shapes still use the torch fallback
+unless the caller requires TileLang, in which case they fail explicitly.
 
 The local Windows environment can install the TileLang wheel, but TileLang
 import currently fails during TVM DLL initialization. `phase7-kernels
@@ -75,11 +81,14 @@ remote run directory back through `scp -r`.
 On H100 Linux, the TileLang import path is validated with the repository-local
 uv environment. `apache-tvm-ffi` is pinned to `0.1.11` because `0.1.12` can abort
 at import time with a duplicate `__ffi_repr__` type-attribute registration error.
+TileLang kernel compilation also requires a modern CUDA toolkit in `PATH`; the
+remote runner puts `/usr/local/cuda/bin` before `/usr/bin` because this H100
+host also has an older `/usr/bin/nvcc` that cannot compile `sm_90a`.
 
-This slice is not the final Phase 7 performance milestone. The final milestone
-still requires a real TileLang paged decode attention kernel, a benchmark where
-it beats the torch gather reference for at least one documented shape, and NCU
-profiling on a Linux NVIDIA machine.
+This slice reaches the first Phase 7 performance milestone when the H100
+artifact shows the TileLang paged decode kernel beating the torch gather
+reference for at least one documented shape. NCU profiling remains a follow-up
+profiling artifact.
 
 ## Benchmarks
 

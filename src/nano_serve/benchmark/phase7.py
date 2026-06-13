@@ -18,6 +18,7 @@ from nano_serve.engine.config import EngineConfig
 from nano_serve.kernels import torch_ops
 from nano_serve.kernels.tilelang import (
     check_tilelang_available,
+    paged_decode_attention as tile_paged_decode_attention,
     rmsnorm as tile_rmsnorm,
     rope as tile_rope,
     sample as tile_sample,
@@ -25,6 +26,8 @@ from nano_serve.kernels.tilelang import (
 )
 from nano_serve.observability import Event, JSONLEventWriter, platform_event
 from nano_serve.platform import detect_platform
+
+TILELANG_KERNELS_IMPLEMENTED = True
 
 
 @dataclass(frozen=True)
@@ -42,9 +45,6 @@ class Phase7KernelBenchmarkConfig:
     seed: int = 0
     require_tilelang: bool = False
     enable_ncu: bool = False
-
-
-TILELANG_KERNELS_IMPLEMENTED = False
 
 
 def run_phase7_kernel_benchmark(config: Phase7KernelBenchmarkConfig) -> dict[str, object]:
@@ -296,8 +296,8 @@ def _paged_attention_case(
         block_tables,
         [config.context_len] * config.batch_size,
     )
-    actual, latency_ms = _time_repeated(
-        lambda: TilePagedAttention().forward_decode(
+    torch_actual, torch_baseline_latency_ms = _time_repeated(
+        lambda: TorchGatherPagedAttention().forward_decode(
             query,
             paged_key,
             paged_value,
@@ -307,10 +307,45 @@ def _paged_attention_case(
         repeats=config.repeats,
         device=device,
     )
+    use_real_tilelang = check_tilelang_available().available
+    if use_real_tilelang:
+        def actual_fn():
+            return TilePagedAttention(require_tilelang=True).forward_decode(
+                query,
+                paged_key,
+                paged_value,
+                block_tables,
+                [config.context_len] * config.batch_size,
+            )[0]
+
+        backend = "tilelang"
+    else:
+        def actual_fn():
+            return tile_paged_decode_attention(
+                query,
+                paged_key,
+                paged_value,
+                block_tables,
+                [config.context_len] * config.batch_size,
+                require_tilelang=False,
+            )[0]
+
+        backend = "torch_fallback"
+    actual, latency_ms = _time_repeated(
+        actual_fn,
+        repeats=config.repeats,
+        device=device,
+    )
     return {
         **_case_result("paged_decode_attention", expected, actual, latency_ms, config),
         "context_len": config.context_len,
         "block_size": config.block_size,
+        "backend": backend,
+        "torch_gather_latency_ms": torch_baseline_latency_ms,
+        "torch_gather_max_abs_diff": _max_abs_diff(expected, torch_actual),
+        "speedup_vs_torch_gather": torch_baseline_latency_ms / latency_ms
+        if latency_ms > 0.0
+        else None,
     }
 
 

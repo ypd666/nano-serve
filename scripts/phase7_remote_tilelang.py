@@ -98,7 +98,8 @@ def _remote_command(args: argparse.Namespace) -> str:
     output_dir = shlex.quote(args.output_dir)
     commands = [
         "set -euo pipefail",
-        "export PATH=\"$HOME/.local/bin:$PATH\"",
+        'export PATH="/usr/local/cuda/bin:$HOME/.local/bin:$PATH"',
+        'export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"',
         (
             f"if [ ! -d {remote_dir}/.git ]; then "
             f"git clone --branch {branch} {repo_url} {remote_dir}; "
