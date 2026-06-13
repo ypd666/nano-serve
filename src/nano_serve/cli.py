@@ -15,6 +15,10 @@ from nano_serve.benchmark.phase6 import (
     Phase6PagedAttentionBenchmarkConfig,
     run_phase6_paged_attention_benchmark,
 )
+from nano_serve.benchmark.phase7 import (
+    Phase7KernelBenchmarkConfig,
+    run_phase7_kernel_benchmark,
+)
 from nano_serve.benchmark.phase0 import Phase0SmokeConfig, run_phase0_smoke
 from nano_serve.engine.config import EngineConfig
 from nano_serve.scheduler.policies import SchedulerPolicy
@@ -88,6 +92,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_phase6_attention_args(phase6)
     phase6.set_defaults(func=_phase6_attention)
 
+    phase7 = subcommands.add_parser(
+        "phase7-kernels",
+        help="Run the Phase 7 TileLang kernel benchmark harness.",
+    )
+    _add_phase7_kernel_args(phase7)
+    phase7.set_defaults(func=_phase7_kernels)
+
     bench = subcommands.add_parser("bench", help="Benchmark helper commands.")
     bench_commands = bench.add_subparsers(dest="bench_command")
     bench_dummy = bench_commands.add_parser(
@@ -114,6 +125,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_phase6_attention_args(bench_attention)
     bench_attention.set_defaults(func=_phase6_attention)
+    bench_kernels = bench_commands.add_parser(
+        "kernels",
+        help="Alias for the Phase 7 TileLang kernel benchmark harness.",
+    )
+    _add_phase7_kernel_args(bench_kernels)
+    bench_kernels.set_defaults(func=_phase7_kernels)
     bench_compare = bench_commands.add_parser(
         "compare",
         help="Compare two benchmark run summaries or run directories.",
@@ -270,6 +287,35 @@ def _add_phase6_attention_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--seed", type=int, default=0, help="random seed")
 
 
+def _add_phase7_kernel_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("runs/phase7"),
+        help="directory for run artifacts",
+    )
+    parser.add_argument("--hidden-size", type=int, default=512, help="operator hidden size")
+    parser.add_argument("--seq-len", type=int, default=128, help="operator sequence length")
+    parser.add_argument("--batch-size", type=int, default=2, help="operator batch size")
+    parser.add_argument("--query-heads", type=int, default=8, help="number of query heads")
+    parser.add_argument("--kv-heads", type=int, default=2, help="number of KV heads")
+    parser.add_argument("--head-dim", type=int, default=64, help="attention head dimension")
+    parser.add_argument("--context-len", type=int, default=512, help="paged attention context")
+    parser.add_argument("--block-size", type=int, default=16, help="paged KV block size")
+    parser.add_argument("--repeats", type=int, default=10, help="repeats per kernel case")
+    parser.add_argument("--seed", type=int, default=0, help="random seed")
+    parser.add_argument(
+        "--require-tilelang",
+        action="store_true",
+        help="skip instead of using torch fallback when TileLang is unavailable",
+    )
+    parser.add_argument(
+        "--enable-ncu",
+        action="store_true",
+        help="record Nsight Compute profiling intent in benchmark artifacts",
+    )
+
+
 def _assets_env(_: argparse.Namespace) -> int:
     print(env_template())
     return 0
@@ -359,6 +405,28 @@ def _phase6_attention(args: argparse.Namespace) -> int:
             block_sizes=_parse_int_list(args.block_sizes, name="block_sizes"),
             repeats=args.repeats,
             seed=args.seed,
+        )
+    )
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
+def _phase7_kernels(args: argparse.Namespace) -> int:
+    summary = run_phase7_kernel_benchmark(
+        Phase7KernelBenchmarkConfig(
+            output_dir=args.output_dir,
+            hidden_size=args.hidden_size,
+            seq_len=args.seq_len,
+            batch_size=args.batch_size,
+            query_heads=args.query_heads,
+            kv_heads=args.kv_heads,
+            head_dim=args.head_dim,
+            context_len=args.context_len,
+            block_size=args.block_size,
+            repeats=args.repeats,
+            seed=args.seed,
+            require_tilelang=args.require_tilelang,
+            enable_ncu=args.enable_ncu,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))

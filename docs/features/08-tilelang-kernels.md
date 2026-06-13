@@ -22,6 +22,9 @@ system-level benchmarks can explain end-to-end impact.
 - `TilePagedAttention`
 - kernel microbenchmark registry
 - correctness tolerance helpers
+- `EngineConfig.attention_backend = "tile_paged"`
+- CLI benchmark:
+  `nano-serve phase7-kernels`
 
 ## Metrics
 
@@ -32,6 +35,10 @@ system-level benchmarks can explain end-to-end impact.
 - HBM bandwidth,
 - occupancy,
 - end-to-end TPOT impact.
+- TileLang availability and skip reason.
+- JSONL events:
+  - `tilelang_availability`,
+  - `tilelang_kernel_case`.
 
 ## Tests
 
@@ -41,6 +48,28 @@ system-level benchmarks can explain end-to-end impact.
 - paged decode attention vs torch gather reference,
 - dtype tolerance.
 
+## Current Implementation Slice
+
+Phase 7 currently provides the integration harness, correctness reference path,
+and benchmark/profiling artifacts needed to develop real TileLang kernels
+without breaking CPU-only or Windows development.
+
+The `kernels.tilelang` package exposes guarded entrypoints for RMSNorm, RoPE,
+SiLU-mul, sampling filter, and paged decode attention. These entrypoints keep a
+torch fallback and report TileLang availability. `TilePagedAttention` exposes
+the future `tile_paged` attention backend while delegating to the Phase 6 torch
+gather reference until real TileLang kernels are implemented.
+
+The local Windows environment can install the TileLang wheel, but TileLang
+import currently fails during TVM DLL initialization. `phase7-kernels
+--require-tilelang` therefore emits a reproducible `skipped` artifact instead
+of silently benchmarking the torch fallback.
+
+This slice is not the final Phase 7 performance milestone. The final milestone
+still requires a real TileLang paged decode attention kernel, a benchmark where
+it beats the torch gather reference for at least one documented shape, and NCU
+profiling on a Linux NVIDIA machine.
+
 ## Benchmarks
 
 - shape sweep,
@@ -48,6 +77,28 @@ system-level benchmarks can explain end-to-end impact.
 - block size sweep,
 - NCU profile,
 - end-to-end ablation.
+
+Examples:
+
+```bash
+nano-serve phase7-kernels \
+  --hidden-size 512 \
+  --seq-len 128 \
+  --batch-size 2 \
+  --query-heads 8 \
+  --kv-heads 2 \
+  --head-dim 64 \
+  --context-len 512 \
+  --block-size 16 \
+  --repeats 10
+```
+
+Require a real TileLang kernel run, producing a skipped artifact if the
+environment or implementation is not ready:
+
+```bash
+nano-serve phase7-kernels --require-tilelang
+```
 
 ## Exit Criteria
 

@@ -37,7 +37,15 @@ benchmark = [
   "matplotlib",
 ]
 tilelang = [
-  "tilelang",
+  "tilelang==0.1.11",
+  "apache-tvm-ffi",
+  "cloudpickle",
+  "ml-dtypes",
+  "psutil",
+  "torch-c-dlpack-ext",
+  "tqdm",
+  "typing-extensions",
+  "z3-solver>=4.13.0,<4.15.5",
 ]
 dev = [
   "pytest",

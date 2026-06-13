@@ -99,6 +99,21 @@ against contiguous attention. The run config records
 `attention_backend="torch_gather_paged"` and `kv_cache="paged"` so later
 TileLang kernels can use the same sweep as an ablation baseline.
 
+Phase 7 kernel benchmarks exercise the TileLang integration harness and torch
+fallback references:
+
+```bash
+python -m nano_serve.cli phase7-kernels --repeats 10
+python -m nano_serve.cli phase7-kernels --require-tilelang
+```
+
+The run emits `tilelang_availability` and `tilelang_kernel_case` events.
+Fallback runs record correctness and latency for RMSNorm, RoPE, SiLU-mul,
+sampling filter, and paged decode attention against torch references. Required
+TileLang runs produce a `skipped` artifact when the package, platform, or real
+kernel implementation is unavailable. Each run writes an `ncu_profile_command`
+artifact with the Nsight Compute command intended for Linux NVIDIA profiling.
+
 ### Online Serving
 
 Simulates request arrival and user-observed latency:
