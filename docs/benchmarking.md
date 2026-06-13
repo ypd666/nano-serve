@@ -113,6 +113,11 @@ sampling filter, and paged decode attention against torch references. Required
 TileLang runs produce a `skipped` artifact when the package, platform, or real
 kernel implementation is unavailable. Each run writes an `ncu_profile_command`
 artifact with the Nsight Compute command intended for Linux NVIDIA profiling.
+For remote Linux NVIDIA validation, use an explicit SSH target:
+
+```bash
+python scripts/phase7_remote_tilelang.py --host user@h100 --remote-dir ~/nano-serve
+```
 
 ### Online Serving
 

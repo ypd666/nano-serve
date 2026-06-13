@@ -8,8 +8,12 @@ from nano_serve.benchmark.phase7 import (
 )
 from nano_serve.kernels import torch_ops
 from nano_serve.kernels.tilelang import rmsnorm, rope, sample, silu_mul
-from nano_serve.kernels.tilelang.availability import TileLangAvailability
+from nano_serve.kernels.tilelang.availability import (
+    TileLangAvailability,
+    check_tilelang_available,
+)
 from nano_serve.observability import read_jsonl_events
+from scripts.phase7_remote_tilelang import main as remote_main
 
 
 def test_tilelang_wrappers_match_torch_references() -> None:
@@ -110,3 +114,29 @@ def test_phase7_kernel_benchmark_skips_when_tilelang_required_and_unavailable(
     assert summary["tilelang_available"] is False
     assert "missing test tilelang" in str(summary["skip_reason"])
     assert Path(summary["artifacts"]["ncu_profile_command"]).exists()
+
+
+def test_tilelang_availability_probe_is_jsonable() -> None:
+    availability = check_tilelang_available()
+    payload = availability.to_dict()
+
+    assert isinstance(payload["available"], bool)
+    assert payload["probe_mode"] in {"subprocess", "in_process"}
+    assert set(payload) == {"available", "version", "error", "probe_mode"}
+
+
+def test_phase7_remote_runner_dry_run(capsys) -> None:
+    exit_code = remote_main(
+        [
+            "--host",
+            "user@h100",
+            "--remote-dir",
+            "~/nano-serve-test",
+            "--dry-run",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "ssh user@h100" in output
+    assert "phase7-kernels --require-tilelang" in output
