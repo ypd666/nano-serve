@@ -101,9 +101,9 @@ roadmap; this file is the more operational backlog.
 
 ## M10-M12: Overlap, Spec Decode, Advanced Features
 
-- [ ] Add tokenizer worker.
-- [ ] Add scheduler/model double buffering.
-- [ ] Add CUDA graph shape buckets.
+- [x] Add tokenizer worker.
+- [x] Add scheduler/model double buffering.
+- [x] Add CUDA graph shape buckets.
 - [ ] Add draft-model speculative decoding.
 - [ ] Add n-gram speculation.
 - [ ] Add quantization experiments.

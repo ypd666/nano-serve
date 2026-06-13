@@ -10,6 +10,10 @@ from nano_serve import __version__
 from nano_serve.assets import download_assets_from_env, env_template
 from nano_serve.benchmark.compare import compare_runs, render_compare_markdown
 from nano_serve.benchmark.offline import OfflineBenchmarkConfig, run_offline_benchmark
+from nano_serve.benchmark.phase10 import (
+    Phase10OverlapGraphBenchmarkConfig,
+    run_phase10_overlap_graph_benchmark,
+)
 from nano_serve.benchmark.phase5 import Phase5KVBenchmarkConfig, run_phase5_kv_benchmark
 from nano_serve.benchmark.phase6 import (
     Phase6PagedAttentionBenchmarkConfig,
@@ -121,6 +125,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_phase9_prefix_cache_args(phase9)
     phase9.set_defaults(func=_phase9_prefix_cache)
 
+    phase10 = subcommands.add_parser(
+        "phase10-overlap-graphs",
+        help="Run the Phase 10 overlap and graph benchmark.",
+    )
+    _add_phase10_overlap_graph_args(phase10)
+    phase10.set_defaults(func=_phase10_overlap_graphs)
+
     bench = subcommands.add_parser("bench", help="Benchmark helper commands.")
     bench_commands = bench.add_subparsers(dest="bench_command")
     bench_dummy = bench_commands.add_parser(
@@ -165,6 +176,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_phase9_prefix_cache_args(bench_prefix_cache)
     bench_prefix_cache.set_defaults(func=_phase9_prefix_cache)
+    bench_overlap_graphs = bench_commands.add_parser(
+        "overlap-graphs",
+        help="Alias for the Phase 10 overlap and graph benchmark.",
+    )
+    _add_phase10_overlap_graph_args(bench_overlap_graphs)
+    bench_overlap_graphs.set_defaults(func=_phase10_overlap_graphs)
     bench_compare = bench_commands.add_parser(
         "compare",
         help="Compare two benchmark run summaries or run directories.",
@@ -448,6 +465,39 @@ def _add_phase9_prefix_cache_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_phase10_overlap_graph_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("runs/phase10"),
+        help="directory for run artifacts",
+    )
+    parser.add_argument("--batch-size", type=int, default=4, help="decode batch size")
+    parser.add_argument("--hidden-size", type=int, default=512, help="hidden dimension")
+    parser.add_argument("--decode-steps", type=int, default=256, help="repeated decode steps")
+    parser.add_argument(
+        "--bucket-batch-sizes",
+        default="1,2,4,8",
+        help="comma-separated graph bucket batch sizes",
+    )
+    parser.add_argument(
+        "--bucket-seq-lens",
+        default="1,2,4,8",
+        help="comma-separated graph bucket sequence lengths",
+    )
+    parser.add_argument(
+        "--disable-torch-compile",
+        action="store_true",
+        help="skip the torch.compile experiment",
+    )
+    parser.add_argument(
+        "--disable-cuda-graph",
+        action="store_true",
+        help="skip the CUDA graph experiment",
+    )
+    parser.add_argument("--seed", type=int, default=0, help="random seed")
+
+
 def _assets_env(_: argparse.Namespace) -> int:
     print(env_template())
     return 0
@@ -595,6 +645,27 @@ def _phase9_prefix_cache(args: argparse.Namespace) -> int:
             cache_blocks=args.cache_blocks,
             max_prefix_entries=args.max_prefix_entries,
             prefill_token_time_ms=args.prefill_token_time_ms,
+        )
+    )
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
+def _phase10_overlap_graphs(args: argparse.Namespace) -> int:
+    summary = run_phase10_overlap_graph_benchmark(
+        Phase10OverlapGraphBenchmarkConfig(
+            output_dir=args.output_dir,
+            batch_size=args.batch_size,
+            hidden_size=args.hidden_size,
+            decode_steps=args.decode_steps,
+            bucket_batch_sizes=_parse_int_list(
+                args.bucket_batch_sizes,
+                name="bucket-batch-sizes",
+            ),
+            bucket_seq_lens=_parse_int_list(args.bucket_seq_lens, name="bucket-seq-lens"),
+            enable_torch_compile=not args.disable_torch_compile,
+            enable_cuda_graph=not args.disable_cuda_graph,
+            seed=args.seed,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))

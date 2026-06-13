@@ -273,12 +273,12 @@ memory-bound。
 
 ### Phase 10: CPU/GPU Overlap and Graphs
 
-- [ ] Add tokenizer worker.
-- [ ] Add asynchronous scheduler preparation.
-- [ ] Add double-buffered batch metadata.
-- [ ] Add `torch.compile` experiment.
-- [ ] Add CUDA graph experiment for decode.
-- [ ] Add shape buckets.
+- [x] Add tokenizer worker.
+- [x] Add asynchronous scheduler preparation.
+- [x] Add double-buffered batch metadata.
+- [x] Add `torch.compile` experiment.
+- [x] Add CUDA graph experiment for decode.
+- [x] Add shape buckets.
 - [ ] Profile CPU overhead with Nsight Systems.
 
 ### Phase 11: Speculative Decoding

@@ -162,6 +162,22 @@ The run emits `prefix_cache_lookup`, `prefix_cache_insert`,
 events. It records hit tokens, hit rate, saved prefill tokens, estimated TTFT
 improvement, used/free blocks, shared blocks, COW copies, and eviction count.
 
+Phase 10 overlap/graph benchmarks measure small-batch decode launch overhead
+with eager torch, guarded `torch.compile`, and guarded CUDA graph replay:
+
+```bash
+python -m nano_serve.cli phase10-overlap-graphs \
+  --batch-size 4 \
+  --hidden-size 512 \
+  --decode-steps 256
+```
+
+The run emits `tokenizer_worker_task`, `async_scheduler_prep`,
+`double_buffer_publish`, and `phase10_graph_case` events. Cases record latency,
+selected shape bucket, padded elements, graph replay count, estimated kernel
+launches, and fallback reason. The run also writes an
+`nsys_profile_command.txt` artifact for Linux NVIDIA profiling.
+
 ### Online Serving
 
 Simulates request arrival and user-observed latency:
