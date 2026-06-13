@@ -1,8 +1,7 @@
-"""Text-only Qwen3.5 torch modules for Phase 1.
+"""Text-only Qwen3.5 torch modules.
 
-This is a narrow full-context, no-cache implementation for
-`Qwen/Qwen3.5-4B`. It intentionally does not include vision inputs, KV cache,
-batch scheduling, or generation policy.
+This is a narrow implementation for `Qwen/Qwen3.5-4B`. It intentionally does
+not include vision inputs, batch scheduling, or generation policy.
 """
 
 from __future__ import annotations
@@ -13,6 +12,8 @@ from typing import Any, cast
 import torch
 import torch.nn.functional as F
 from torch import nn
+
+from nano_serve.kv_cache.contiguous import ContiguousLayerState
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,12 @@ class Qwen35TextConfig:
         )
 
 
+@dataclass
+class Qwen35CachedOutput:
+    logits: torch.Tensor
+    layer_states: list[ContiguousLayerState]
+
+
 def _optional_int(value: Any) -> int | None:
     if value is None:
         return None
@@ -146,9 +153,19 @@ class Qwen35TextRotaryEmbedding(nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
     @torch.no_grad()
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        x: torch.Tensor,
+        *,
+        position_offset: int = 0,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         batch_size, seq_len = x.shape[:2]
-        position_ids = torch.arange(seq_len, device=x.device, dtype=torch.float32)
+        position_ids = torch.arange(
+            position_offset,
+            position_offset + seq_len,
+            device=x.device,
+            dtype=torch.float32,
+        )
         inv_freq = cast(torch.Tensor, self.inv_freq)
         freqs = torch.outer(position_ids, inv_freq.float())
         emb = torch.cat((freqs, freqs), dim=-1)
@@ -292,6 +309,112 @@ def _torch_chunk_gated_delta_rule(
     return core_attn_out.transpose(1, 2).contiguous().to(initial_dtype)
 
 
+def _last_conv_tokens(x: torch.Tensor, state_tokens: int) -> torch.Tensor:
+    if state_tokens <= 0:
+        return x[:, :, :0].contiguous()
+    if x.shape[-1] >= state_tokens:
+        return x[:, :, -state_tokens:].detach().contiguous()
+    pad = torch.zeros(
+        *x.shape[:-1],
+        state_tokens - x.shape[-1],
+        dtype=x.dtype,
+        device=x.device,
+    )
+    return torch.cat((pad, x), dim=-1).detach().contiguous()
+
+
+def _linear_recurrent_state(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+) -> torch.Tensor:
+    del query
+    key = _l2norm(key, dim=-1, eps=1e-6)
+    batch_size, _, num_heads, k_head_dim = key.shape
+    v_head_dim = value.shape[-1]
+    state = torch.zeros(
+        batch_size,
+        num_heads,
+        k_head_dim,
+        v_head_dim,
+        dtype=torch.float32,
+        device=key.device,
+    )
+    key_f = key.transpose(1, 2).contiguous().to(torch.float32)
+    value_f = value.transpose(1, 2).contiguous().to(torch.float32)
+    g_f = g.transpose(1, 2).contiguous().to(torch.float32)
+    beta_f = beta.transpose(1, 2).contiguous().to(torch.float32)
+    for token_index in range(key.shape[1]):
+        token_key = key_f[:, :, token_index]
+        token_value = value_f[:, :, token_index]
+        token_g = g_f[:, :, token_index]
+        token_beta = beta_f[:, :, token_index]
+        state = _linear_recurrent_step(
+            state,
+            token_key,
+            token_value,
+            token_g,
+            token_beta,
+        )
+    return state.detach()
+
+
+def _torch_gated_delta_decode(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+    recurrent_state: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    initial_dtype = query.dtype
+    query = _l2norm(query, dim=-1, eps=1e-6)
+    key = _l2norm(key, dim=-1, eps=1e-6)
+
+    query_f = query.transpose(1, 2).contiguous().to(torch.float32)
+    key_f = key.transpose(1, 2).contiguous().to(torch.float32)
+    value_f = value.transpose(1, 2).contiguous().to(torch.float32)
+    g_f = g.transpose(1, 2).contiguous().to(torch.float32)
+    beta_f = beta.transpose(1, 2).contiguous().to(torch.float32)
+    state = recurrent_state.to(dtype=torch.float32)
+
+    outputs = []
+    for token_index in range(query.shape[1]):
+        token_query = query_f[:, :, token_index] * (query.shape[-1] ** -0.5)
+        token_key = key_f[:, :, token_index]
+        token_value = value_f[:, :, token_index]
+        token_g = g_f[:, :, token_index]
+        token_beta = beta_f[:, :, token_index]
+
+        decayed_state = state * token_g.exp().unsqueeze(-1).unsqueeze(-1)
+        old_value = (token_key.unsqueeze(-2) @ decayed_state).squeeze(-2)
+        new_value = token_value - old_value
+        state = decayed_state + (
+            (token_key * token_beta.unsqueeze(-1)).unsqueeze(-1)
+            @ new_value.unsqueeze(-2)
+        )
+        output = (token_query.unsqueeze(-2) @ state).squeeze(-2)
+        outputs.append(output)
+
+    decoded = torch.stack(outputs, dim=2).transpose(1, 2).contiguous()
+    return decoded.to(initial_dtype), state.detach()
+
+
+def _linear_recurrent_step(
+    state: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+) -> torch.Tensor:
+    decayed_state = state * g.exp().unsqueeze(-1).unsqueeze(-1)
+    old_value = (key.unsqueeze(-2) @ decayed_state).squeeze(-2)
+    new_value = value - old_value
+    return decayed_state + ((key * beta.unsqueeze(-1)).unsqueeze(-1) @ new_value.unsqueeze(-2))
+
+
 class Qwen35GatedDeltaNet(nn.Module):
     def __init__(
         self,
@@ -368,8 +491,24 @@ class Qwen35GatedDeltaNet(nn.Module):
         )
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        output, _, _ = self.forward_with_cache(
+            hidden_states,
+            conv_state=None,
+            recurrent_state=None,
+            use_cache=False,
+        )
+        return output
+
+    def forward_with_cache(
+        self,
+        hidden_states: torch.Tensor,
+        *,
+        conv_state: torch.Tensor | None,
+        recurrent_state: torch.Tensor | None,
+        use_cache: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch_size, seq_len, _ = hidden_states.shape
-        mixed_qkv = self.in_proj_qkv(hidden_states).transpose(1, 2)
+        mixed_qkv_unconvolved = self.in_proj_qkv(hidden_states).transpose(1, 2)
         z = self.in_proj_z(hidden_states).reshape(
             batch_size,
             seq_len,
@@ -379,7 +518,18 @@ class Qwen35GatedDeltaNet(nn.Module):
         beta = self.in_proj_b(hidden_states).sigmoid()
         a = self.in_proj_a(hidden_states)
 
-        mixed_qkv = F.silu(self.conv1d(mixed_qkv)[:, :, : mixed_qkv.shape[-1]])
+        if conv_state is None:
+            mixed_qkv = F.silu(
+                self.conv1d(mixed_qkv_unconvolved)[:, :, : mixed_qkv_unconvolved.shape[-1]]
+            )
+            next_conv_state = _last_conv_tokens(mixed_qkv_unconvolved, self.conv_kernel_size - 1)
+        else:
+            conv_input = torch.cat((conv_state, mixed_qkv_unconvolved), dim=-1)
+            convolved = F.silu(self.conv1d(conv_input)[:, :, : conv_input.shape[-1]])
+            start = self.conv_kernel_size - 1
+            mixed_qkv = convolved[:, :, start : start + seq_len]
+            next_conv_state = _last_conv_tokens(conv_input, self.conv_kernel_size - 1)
+
         mixed_qkv = mixed_qkv.transpose(1, 2)
         query, key, value = torch.split(
             mixed_qkv,
@@ -397,12 +547,26 @@ class Qwen35GatedDeltaNet(nn.Module):
             query = query.repeat_interleave(repeat, dim=2)
             key = key.repeat_interleave(repeat, dim=2)
 
-        core_attn_out = _torch_chunk_gated_delta_rule(query, key, value, g, beta)
+        if recurrent_state is None:
+            core_attn_out = _torch_chunk_gated_delta_rule(query, key, value, g, beta)
+            next_recurrent_state = _linear_recurrent_state(query, key, value, g, beta)
+        else:
+            core_attn_out, next_recurrent_state = _torch_gated_delta_decode(
+                query,
+                key,
+                value,
+                g,
+                beta,
+                recurrent_state,
+            )
         core_attn_out = core_attn_out.reshape(-1, self.head_v_dim)
         z = z.reshape(-1, self.head_v_dim)
         core_attn_out = self.norm(core_attn_out, z)
         core_attn_out = core_attn_out.reshape(batch_size, seq_len, -1)
-        return self.out_proj(core_attn_out)
+        output = self.out_proj(core_attn_out)
+        if not use_cache:
+            return output, next_conv_state, next_recurrent_state
+        return output, next_conv_state, next_recurrent_state
 
 
 class Qwen35Attention(nn.Module):
@@ -467,6 +631,24 @@ class Qwen35Attention(nn.Module):
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
+        attn_output, _, _ = self.forward_with_cache(
+            hidden_states,
+            position_embeddings,
+            past_key=None,
+            past_value=None,
+            use_cache=False,
+        )
+        return attn_output
+
+    def forward_with_cache(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        *,
+        past_key: torch.Tensor | None,
+        past_value: torch.Tensor | None,
+        use_cache: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
         query_states, gate = torch.chunk(
@@ -481,19 +663,34 @@ class Qwen35Attention(nn.Module):
 
         cos, sin = position_embeddings
         query_states, key_states = _apply_rotary_pos_emb(query_states, key_states, cos, sin)
-        key_states = _repeat_kv(key_states, self.num_key_value_groups)
-        value_states = _repeat_kv(value_states, self.num_key_value_groups)
+        if past_key is not None:
+            key_states = torch.cat((past_key, key_states), dim=2)
+        if past_value is not None:
+            value_states = torch.cat((past_value, value_states), dim=2)
 
-        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) * self.scaling
-        seq_len = hidden_states.shape[1]
-        causal_mask = _causal_mask(seq_len, device=hidden_states.device, dtype=attn_weights.dtype)
-        attn_weights = attn_weights + causal_mask
+        present_key = key_states
+        present_value = value_states
+        key_for_attention = _repeat_kv(key_states, self.num_key_value_groups)
+        value_for_attention = _repeat_kv(value_states, self.num_key_value_groups)
+
+        attn_weights = torch.matmul(query_states, key_for_attention.transpose(2, 3)) * self.scaling
+        if past_key is None:
+            seq_len = hidden_states.shape[1]
+            causal_mask = _causal_mask(
+                seq_len,
+                device=hidden_states.device,
+                dtype=attn_weights.dtype,
+            )
+            attn_weights = attn_weights + causal_mask
         attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-        attn_output = torch.matmul(attn_weights, value_states)
+        attn_output = torch.matmul(attn_weights, value_for_attention)
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(*input_shape, -1)
         attn_output = attn_output * torch.sigmoid(gate)
-        return self.o_proj(attn_output)
+        output = self.o_proj(attn_output)
+        if not use_cache:
+            return output, present_key, present_value
+        return output, present_key, present_value
 
 
 def _causal_mask(seq_len: int, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
@@ -587,18 +784,61 @@ class Qwen35DecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
+        hidden_states, _ = self.forward_with_cache(
+            hidden_states,
+            position_embeddings,
+            cache_state=None,
+            use_cache=False,
+        )
+        return hidden_states
+
+    def forward_with_cache(
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        *,
+        cache_state: ContiguousLayerState | None,
+        use_cache: bool,
+    ) -> tuple[torch.Tensor, ContiguousLayerState]:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         if self.layer_type == "linear_attention":
-            hidden_states = self.linear_attn(hidden_states)
+            conv_state = cache_state.conv_state if cache_state is not None else None
+            recurrent_state = cache_state.recurrent_state if cache_state is not None else None
+            hidden_states, next_conv_state, next_recurrent_state = self.linear_attn.forward_with_cache(
+                hidden_states,
+                conv_state=conv_state,
+                recurrent_state=recurrent_state,
+                use_cache=use_cache,
+            )
+            next_cache_state = ContiguousLayerState(
+                layer_type=self.layer_type,
+                conv_state=next_conv_state,
+                recurrent_state=next_recurrent_state,
+            )
         elif self.layer_type == "full_attention":
-            hidden_states = self.self_attn(hidden_states, position_embeddings)
+            past_key = cache_state.key if cache_state is not None else None
+            past_value = cache_state.value if cache_state is not None else None
+            hidden_states, next_key, next_value = self.self_attn.forward_with_cache(
+                hidden_states,
+                position_embeddings,
+                past_key=past_key,
+                past_value=past_value,
+                use_cache=use_cache,
+            )
+            next_cache_state = ContiguousLayerState(
+                layer_type=self.layer_type,
+                key=next_key.detach(),
+                value=next_value.detach(),
+            )
+        else:
+            raise ValueError(f"Unsupported Qwen3.5 layer type: {self.layer_type}")
         hidden_states = residual + hidden_states
 
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
-        return residual + hidden_states
+        return residual + hidden_states, next_cache_state
 
 
 class Qwen35TextModel(nn.Module):
@@ -635,9 +875,52 @@ class Qwen35TextModel(nn.Module):
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         hidden_states = self.embed_tokens(input_ids)
         position_embeddings = self.rotary_emb(hidden_states)
-        for decoder_layer in self.layers:
+        for decoder_layer in cast(list[Qwen35DecoderLayer], list(self.layers)):
             hidden_states = decoder_layer(hidden_states, position_embeddings)
         return self.norm(hidden_states)
+
+    def prefill_with_cache(
+        self,
+        input_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, list[ContiguousLayerState]]:
+        hidden_states = self.embed_tokens(input_ids)
+        position_embeddings = self.rotary_emb(hidden_states)
+        layer_states = []
+        for decoder_layer in cast(list[Qwen35DecoderLayer], list(self.layers)):
+            hidden_states, layer_state = decoder_layer.forward_with_cache(
+                hidden_states,
+                position_embeddings,
+                cache_state=None,
+                use_cache=True,
+            )
+            layer_states.append(layer_state)
+        return self.norm(hidden_states), layer_states
+
+    def decode_with_cache(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        layer_states: list[ContiguousLayerState],
+        position_offset: int,
+    ) -> tuple[torch.Tensor, list[ContiguousLayerState]]:
+        if input_ids.shape[1] != 1:
+            raise ValueError("cached decode expects exactly one token")
+        if len(layer_states) != len(self.layers):
+            raise ValueError(f"expected {len(self.layers)} layer states, got {len(layer_states)}")
+
+        hidden_states = self.embed_tokens(input_ids)
+        position_embeddings = self.rotary_emb(hidden_states, position_offset=position_offset)
+        next_layer_states = []
+        layers = cast(list[Qwen35DecoderLayer], list(self.layers))
+        for decoder_layer, layer_state in zip(layers, layer_states, strict=True):
+            hidden_states, next_layer_state = decoder_layer.forward_with_cache(
+                hidden_states,
+                position_embeddings,
+                cache_state=layer_state,
+                use_cache=True,
+            )
+            next_layer_states.append(next_layer_state)
+        return self.norm(hidden_states), next_layer_states
 
 
 class Qwen35ForCausalLM(nn.Module):
@@ -672,3 +955,27 @@ class Qwen35ForCausalLM(nn.Module):
 
     def next_token_logits(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.forward(input_ids, logits_to_keep=1)[:, -1, :]
+
+    def prefill_with_cache(self, input_ids: torch.Tensor) -> Qwen35CachedOutput:
+        hidden_states, layer_states = self.model.prefill_with_cache(input_ids)
+        return Qwen35CachedOutput(
+            logits=self.lm_head(hidden_states[:, -1:, :])[:, -1, :],
+            layer_states=layer_states,
+        )
+
+    def decode_with_cache(
+        self,
+        input_ids: torch.Tensor,
+        *,
+        layer_states: list[ContiguousLayerState],
+        position_offset: int,
+    ) -> Qwen35CachedOutput:
+        hidden_states, next_layer_states = self.model.decode_with_cache(
+            input_ids,
+            layer_states=layer_states,
+            position_offset=position_offset,
+        )
+        return Qwen35CachedOutput(
+            logits=self.lm_head(hidden_states[:, -1:, :])[:, -1, :],
+            layer_states=next_layer_states,
+        )

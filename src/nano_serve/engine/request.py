@@ -60,6 +60,7 @@ class RequestState:
     stop_reason: str | None = None
     kv_handle: object | None = None
     block_table: list[int] = field(default_factory=list)
+    phase_metadata: list[dict[str, object]] = field(default_factory=list)
     prefix_cache_hit_tokens: int = 0
 
     @property

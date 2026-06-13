@@ -107,14 +107,17 @@ def test_phase1_offline_benchmark_writes_artifacts(tmp_path: Path, monkeypatch) 
             num_samples=2,
             max_new_tokens=3,
             max_prompt_tokens=4,
+            kv_cache="contiguous",
         )
     )
 
     assert summary["status"] == "ok"
     assert summary["phase"] == "phase1"
+    assert summary["kv_cache"] == "contiguous"
     assert summary["samples_loaded"] == 2
     assert summary["total_output_tokens"] == 4
     assert summary["output_tokens_per_sec"] is not None
+    assert summary["max_kv_bytes_used"] == 0
 
     artifacts = summary["artifacts"]
     assert isinstance(artifacts, dict)
@@ -142,6 +145,8 @@ def test_phase1_offline_benchmark_writes_artifacts(tmp_path: Path, monkeypatch) 
         "request_end",
         "run_end",
     ]
+    assert events[4]["fields"]["kv_cache"] == "none"
+    assert events[7]["fields"]["kv_sequence_length"] == 0
 
 
 def test_compare_runs(tmp_path: Path) -> None:
@@ -257,12 +262,26 @@ class _FakeEngine:
         del prompt_token_ids, params
         if callable(phase_callback):
             phase_callback(_FakePhaseEvent(phase="prefill", event="start", token_index=None))
-            phase_callback(_FakePhaseEvent(phase="prefill", event="end", token_index=None))
+            phase_callback(
+                _FakePhaseEvent(
+                    phase="prefill",
+                    event="end",
+                    token_index=None,
+                    metadata={"kv_cache": "none", "kv_sequence_length": 0},
+                )
+            )
         if callable(stream_callback):
             stream_callback(_FakeStreamEvent(token_id=3, token_index=0))
         if callable(phase_callback):
             phase_callback(_FakePhaseEvent(phase="decode", event="start", token_index=1))
-            phase_callback(_FakePhaseEvent(phase="decode", event="end", token_index=1))
+            phase_callback(
+                _FakePhaseEvent(
+                    phase="decode",
+                    event="end",
+                    token_index=1,
+                    metadata={"kv_cache": "none", "kv_sequence_length": 0},
+                )
+            )
         if callable(stream_callback):
             stream_callback(_FakeStreamEvent(token_id=4, token_index=1))
         self.finished.append(_FakeState())
@@ -282,8 +301,16 @@ class _FakePhaseEvent:
     request_id = "fake-request"
     num_tokens = 1
 
-    def __init__(self, *, phase: str, event: str, token_index: int | None) -> None:
+    def __init__(
+        self,
+        *,
+        phase: str,
+        event: str,
+        token_index: int | None,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
         self.phase = phase
         self.event = event
         self.token_index = token_index
         self.timestamp_ns = 0
+        self.metadata = metadata

@@ -13,7 +13,7 @@ from pathlib import Path
 from nano_serve.assets import AssetConfig
 from nano_serve.benchmark.datasets import load_sharegpt_dataset
 from nano_serve.benchmark.report import write_markdown_report
-from nano_serve.engine.config import EngineConfig
+from nano_serve.engine.config import EngineConfig, KVCacheKind
 from nano_serve.engine.core import Engine, PhaseEvent, StreamEvent
 from nano_serve.model.tokenizer import TokenizerWrapper
 from nano_serve.observability import Event, JSONLEventWriter, platform_event
@@ -28,6 +28,7 @@ class OfflineBenchmarkConfig:
     max_new_tokens: int = 8
     max_prompt_tokens: int = 128
     workload: str = "single_short"
+    kv_cache: KVCacheKind = "none"
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,11 @@ class RequestBenchmarkSummary:
     tpot_ms: float | None
     e2e_ms: float | None
     wall_ms: float
+    kv_cache: str
+    kv_sequence_length: int | None = None
+    kv_bytes_used: int | None = None
+    kv_blocks_used: int | None = None
+    kv_fragmentation: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -53,6 +59,11 @@ class RequestBenchmarkSummary:
             "tpot_ms": self.tpot_ms,
             "e2e_ms": self.e2e_ms,
             "wall_ms": self.wall_ms,
+            "kv_cache": self.kv_cache,
+            "kv_sequence_length": self.kv_sequence_length,
+            "kv_bytes_used": self.kv_bytes_used,
+            "kv_blocks_used": self.kv_blocks_used,
+            "kv_fragmentation": self.kv_fragmentation,
         }
 
 
@@ -70,11 +81,13 @@ def run_offline_benchmark(config: OfflineBenchmarkConfig) -> dict[str, object]:
     engine_config = EngineConfig(
         model_path=str(asset_config.model_path),
         dataset_path=str(asset_config.dataset_path),
+        kv_cache=config.kv_cache,
     )
     run_config = {
         "run_id": run_id,
         "phase": "phase1",
         "workload": config.workload,
+        "kv_cache": config.kv_cache,
         "num_samples": config.num_samples,
         "max_new_tokens": config.max_new_tokens,
         "max_prompt_tokens": config.max_prompt_tokens,
@@ -124,6 +137,7 @@ def run_offline_benchmark(config: OfflineBenchmarkConfig) -> dict[str, object]:
             stream_events: list[StreamEvent] = []
 
             def phase_callback(event: PhaseEvent) -> None:
+                metadata = event.metadata or {}
                 if event.phase == "prefill":
                     writer.write(
                         Event(
@@ -132,6 +146,7 @@ def run_offline_benchmark(config: OfflineBenchmarkConfig) -> dict[str, object]:
                                 "request_id": event.request_id,
                                 "sample_id": sample.sample_id,
                                 "num_tokens": event.num_tokens,
+                                **metadata,
                             },
                         )
                     )
@@ -146,6 +161,7 @@ def run_offline_benchmark(config: OfflineBenchmarkConfig) -> dict[str, object]:
                                 "sample_id": sample.sample_id,
                                 "token_index": event.token_index,
                                 "num_tokens": event.num_tokens,
+                                **metadata,
                             },
                         )
                     )
@@ -172,6 +188,7 @@ def run_offline_benchmark(config: OfflineBenchmarkConfig) -> dict[str, object]:
             )
             request_end_ns = time.monotonic_ns()
             state = engine.finished[before_finished]
+            kv_metadata = _latest_kv_metadata(state)
             if len(stream_events) != len(output_token_ids):
                 raise RuntimeError("stream callback count does not match generated tokens")
             request_summary = RequestBenchmarkSummary(
@@ -184,6 +201,11 @@ def run_offline_benchmark(config: OfflineBenchmarkConfig) -> dict[str, object]:
                 tpot_ms=state.metrics.tpot_ms(len(output_token_ids)),
                 e2e_ms=state.metrics.e2e_ms,
                 wall_ms=(request_end_ns - request_start_ns) / 1_000_000,
+                kv_cache=config.kv_cache,
+                kv_sequence_length=_optional_int(kv_metadata.get("kv_sequence_length")),
+                kv_bytes_used=_optional_int(kv_metadata.get("kv_bytes_used")),
+                kv_blocks_used=_optional_int(kv_metadata.get("kv_blocks_used")),
+                kv_fragmentation=_optional_float(kv_metadata.get("kv_fragmentation")),
             )
             request_summaries.append(request_summary)
             writer.write(Event("request_end", fields=request_summary.to_dict()))
@@ -229,6 +251,7 @@ def _summary(
         "run_id": run_id,
         "phase": "phase1",
         "workload": config.workload,
+        "kv_cache": config.kv_cache,
         "status": "ok",
         "run_dir": str(run_dir),
         "samples_loaded": len(request_summaries),
@@ -244,9 +267,29 @@ def _summary(
         if elapsed_s
         else None,
         "requests": [item.to_dict() for item in request_summaries],
+        "max_kv_bytes_used": max(
+            (item.kv_bytes_used or 0 for item in request_summaries),
+            default=0,
+        ),
         "platform": platform,
         "artifacts": artifacts,
     }
+
+
+def _latest_kv_metadata(state: object) -> dict[str, object]:
+    events = getattr(state, "phase_metadata", None)
+    if not isinstance(events, list) or not events:
+        return {}
+    latest = events[-1]
+    return latest if isinstance(latest, dict) else {}
+
+
+def _optional_int(value: object) -> int | None:
+    return int(value) if isinstance(value, (int, float)) else None
+
+
+def _optional_float(value: object) -> float | None:
+    return float(value) if isinstance(value, (int, float)) else None
 
 
 def _stop_token_ids(tokenizer: TokenizerWrapper) -> tuple[int, ...]:

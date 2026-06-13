@@ -190,12 +190,12 @@ memory-bound。
 ### Phase 2: KV Cache
 
 - [x] Split execution into prefill and decode.
-- [ ] Implement contiguous KV cache.
-- [ ] Implement per-layer K/V cache tensors.
-- [ ] Implement RoPE position handling for cached decode.
-- [ ] Validate cached decode logits against full forward.
-- [ ] Benchmark no-cache vs KV-cache decoding.
-- [ ] Record KV memory usage.
+- [x] Implement contiguous KV cache.
+- [x] Implement per-layer K/V cache tensors.
+- [x] Implement RoPE position handling for cached decode.
+- [x] Validate cached decode logits against full forward.
+- [x] Benchmark no-cache vs KV-cache decoding.
+- [x] Record KV memory usage.
 
 ### Phase 3: Static Batching
 

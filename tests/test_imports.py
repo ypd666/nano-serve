@@ -12,6 +12,7 @@ from nano_serve.assets import (
     env_template,
     load_dotenv,
 )
+from nano_serve.kv_cache import ContiguousKVCache, ContiguousKVCacheConfig, ContiguousLayerState
 from nano_serve.kv_cache.paged import PagedKVCache
 from nano_serve.observability import platform_event
 from nano_serve.platform import detect_platform
@@ -74,6 +75,29 @@ def test_paged_kv_allocator_smoke() -> None:
     cache.free("req")
 
     assert cache.get_block_table("req") == []
+
+
+def test_contiguous_kv_cache_tracks_sequence_and_bytes() -> None:
+    import torch
+
+    cache = ContiguousKVCache(ContiguousKVCacheConfig(max_model_len=8, num_layers=1, block_size=4))
+    layer_state = ContiguousLayerState(
+        layer_type="full_attention",
+        key=torch.zeros(1, 1, 3, 2),
+        value=torch.zeros(1, 1, 3, 2),
+    )
+
+    handle = cache.allocate_prefill("req", 3, max_decode_tokens=1, layer_states=[layer_state])
+    cache.allocate_decode_slot("req")
+
+    assert handle.num_tokens == 4
+    assert cache.sequence_length("req") == 4
+    assert cache.get_block_table("req") == [0]
+    assert cache.stats().bytes_used > 0
+
+    cache.free("req")
+
+    assert cache.stats().tokens_used == 0
 
 
 def test_every_feature_doc_exists() -> None:

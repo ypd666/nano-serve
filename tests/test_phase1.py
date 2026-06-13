@@ -10,6 +10,7 @@ from nano_serve.engine import Engine, EngineConfig
 from nano_serve.engine.batch import BatchKind, BatchPlan
 from nano_serve.model import HuggingFaceOracle, TokenizerWrapper
 from nano_serve.model.loader import ModelLoader, ModelSpec
+from nano_serve.model.qwen35 import Qwen35ForCausalLM, Qwen35TextConfig
 from nano_serve.model.torch_runner import TorchModelRunner
 from nano_serve.sampling.base import SamplingParams
 
@@ -84,6 +85,35 @@ def test_engine_generate_uses_top_k_sampler_when_requested() -> None:
     )
 
     assert output_token_ids == [1]
+
+
+def test_qwen35_cached_decode_matches_full_context_small_model() -> None:
+    import torch
+
+    torch.manual_seed(0)
+    model = Qwen35ForCausalLM(
+        _small_qwen_config(),
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+    model.eval()
+    token_ids = torch.tensor([[1, 2, 3, 4, 5]], dtype=torch.long)
+
+    with torch.inference_mode():
+        full_logits = model.next_token_logits(token_ids)
+        cached = model.prefill_with_cache(token_ids[:, :3])
+        cached = model.decode_with_cache(
+            token_ids[:, 3:4],
+            layer_states=cached.layer_states,
+            position_offset=3,
+        )
+        cached = model.decode_with_cache(
+            token_ids[:, 4:5],
+            layer_states=cached.layer_states,
+            position_offset=4,
+        )
+
+    torch.testing.assert_close(cached.logits, full_logits, rtol=1e-4, atol=1e-4)
 
 
 @pytest.mark.skipif(
@@ -216,12 +246,25 @@ class _FakeRunner:
         logits[0, next_token_id] = 1000.0
         return logits
 
-    def prefill(self, prompt_token_ids: list[int]):
+    def prefill(
+        self,
+        prompt_token_ids: list[int],
+        *,
+        request_id: str | None = None,
+        max_decode_tokens: int = 0,
+    ):
+        del request_id, max_decode_tokens
         self.calls.append(("prefill", list(prompt_token_ids)))
         return _FakeRunnerOutput(self.next_token_logits(prompt_token_ids))
 
-    def decode(self, context_token_ids: list[int], *, new_token_id: int | None = None):
-        del new_token_id
+    def decode(
+        self,
+        context_token_ids: list[int],
+        *,
+        new_token_id: int | None = None,
+        request_id: str | None = None,
+    ):
+        del new_token_id, request_id
         self.calls.append(("decode", list(context_token_ids)))
         return _FakeRunnerOutput(self.next_token_logits(context_token_ids))
 
@@ -239,14 +282,55 @@ class _FixedLogitsRunner:
         self.index += 1
         return logits
 
-    def prefill(self, prompt_token_ids: list[int]):
+    def prefill(
+        self,
+        prompt_token_ids: list[int],
+        *,
+        request_id: str | None = None,
+        max_decode_tokens: int = 0,
+    ):
+        del request_id, max_decode_tokens
         return _FakeRunnerOutput(self.next_token_logits(prompt_token_ids))
 
-    def decode(self, context_token_ids: list[int], *, new_token_id: int | None = None):
-        del new_token_id
+    def decode(
+        self,
+        context_token_ids: list[int],
+        *,
+        new_token_id: int | None = None,
+        request_id: str | None = None,
+    ):
+        del new_token_id, request_id
         return _FakeRunnerOutput(self.next_token_logits(context_token_ids))
 
 
 class _FakeRunnerOutput:
     def __init__(self, logits: object) -> None:
         self.logits = logits
+        self.metadata = {"kv_cache": "none"}
+
+
+def _small_qwen_config() -> Qwen35TextConfig:
+    return Qwen35TextConfig(
+        vocab_size=32,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        rms_norm_eps=1e-6,
+        hidden_act="silu",
+        attention_bias=False,
+        attention_dropout=0.0,
+        head_dim=4,
+        linear_conv_kernel_dim=3,
+        linear_key_head_dim=4,
+        linear_value_head_dim=4,
+        linear_num_key_heads=2,
+        linear_num_value_heads=4,
+        max_position_embeddings=64,
+        rope_theta=10000.0,
+        partial_rotary_factor=1.0,
+        layer_types=("linear_attention", "full_attention"),
+        pad_token_id=0,
+        eos_token_id=2,
+    )

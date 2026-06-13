@@ -48,6 +48,27 @@ not hide request admission, stop conditions, or streaming behavior.
 4. `continuous`: iteration-level scheduling with dynamic admission/removal.
 5. `chunked_prefill`: mixed prefill/decode scheduling for long prompts.
 
+## Phase 2 KV Ownership
+
+`EngineConfig.kv_cache` selects the single-request execution path:
+
+- `none`: Phase 1 full-context baseline. Decode reruns prompt plus generated
+  tokens.
+- `contiguous`: Phase 2 cached decode. Prefill allocates one contiguous
+  per-request cache, and each decode step consumes only the newest token plus
+  cached state.
+
+The engine owns request lifecycle and calls `ModelRunner.free(request_id)` when
+the request finishes. The model runner owns the `ContiguousKVCache` instance for
+the single-request path. Request state records the current block table and phase
+metadata, but does not mutate cache tensors directly.
+
+For Qwen3.5-4B, contiguous cache contains two state types:
+
+- full-attention layers store per-layer K/V tensors,
+- linear-attention layers store recurrent state plus causal convolution window
+  state.
+
 ## Distributed Boundary
 
 Distributed features should reuse the same high-level engine contract:

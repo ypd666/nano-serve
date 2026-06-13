@@ -17,6 +17,7 @@ def render_markdown_report(summary: dict[str, object]) -> str:
         f"- Run ID: `{summary.get('run_id', 'unknown')}`",
         f"- Phase: `{summary.get('phase', 'unknown')}`",
         f"- Workload: `{summary.get('workload', 'unknown')}`",
+        f"- KV cache: `{summary.get('kv_cache', 'unknown')}`",
         f"- Status: `{summary.get('status', 'unknown')}`",
         f"- Samples loaded: `{summary.get('samples_loaded', 0)}`",
         f"- Dataset total rows: `{summary.get('dataset_total', 0)}`",
@@ -35,6 +36,7 @@ def render_markdown_report(summary: dict[str, object]) -> str:
                 f"- Output tokens/s: `{summary.get('output_tokens_per_sec')}`",
                 f"- Total tokens/s: `{summary.get('total_tokens_per_sec')}`",
                 f"- Requests/s: `{summary.get('requests_per_sec')}`",
+                f"- Max KV bytes used: `{summary.get('max_kv_bytes_used', 0)}`",
             ]
         )
 
@@ -55,6 +57,7 @@ def render_markdown_report(summary: dict[str, object]) -> str:
                     f"- TTFT ms: `{request.get('ttft_ms')}`",
                     f"- TPOT ms: `{request.get('tpot_ms')}`",
                     f"- E2E ms: `{request.get('e2e_ms')}`",
+                    f"- KV bytes used: `{request.get('kv_bytes_used')}`",
                     "",
                 ]
             )

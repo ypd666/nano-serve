@@ -156,6 +156,12 @@ def _add_phase1_offline_args(parser: argparse.ArgumentParser) -> None:
         default="single_short",
         help="workload name recorded in artifacts",
     )
+    parser.add_argument(
+        "--kv-cache",
+        choices=("none", "contiguous"),
+        default="none",
+        help="KV cache backend for the torch offline benchmark",
+    )
 
 
 def _assets_env(_: argparse.Namespace) -> int:
@@ -208,6 +214,7 @@ def _phase1_offline(args: argparse.Namespace) -> int:
             max_new_tokens=args.max_new_tokens,
             max_prompt_tokens=args.max_prompt_tokens,
             workload=args.workload,
+            kv_cache=args.kv_cache,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))

@@ -32,6 +32,7 @@ class PhaseEvent:
     token_index: int | None
     timestamp_ns: int
     num_tokens: int | None = None
+    metadata: dict[str, object] | None = None
 
 
 StreamCallback = Callable[[StreamEvent], None]
@@ -111,10 +112,17 @@ class Engine:
                     token_index=None,
                     num_tokens=len(state.prompt_token_ids),
                 )
-                prefill_output = runner.prefill(state.prompt_token_ids)
+                prefill_output = runner.prefill(
+                    state.prompt_token_ids,
+                    request_id=state.request_id,
+                    max_decode_tokens=state.max_new_tokens,
+                )
                 now_ns = time.monotonic_ns()
                 state.metrics.prefill_end_time_ns = now_ns
                 state.metrics.first_token_time_ns = now_ns
+                prefill_metadata = dict(getattr(prefill_output, "metadata", {}))
+                state.block_table = _metadata_block_table(prefill_metadata)
+                state.phase_metadata.append(prefill_metadata)
                 self._emit_phase(
                     phase_callback,
                     state,
@@ -123,6 +131,7 @@ class Engine:
                     token_index=None,
                     timestamp_ns=now_ns,
                     num_tokens=len(state.prompt_token_ids),
+                    metadata=prefill_metadata,
                 )
                 logits = prefill_output.logits
                 state.status = RequestStatus.DECODE
@@ -139,7 +148,11 @@ class Engine:
                 decode_output = runner.decode(
                     context_token_ids,
                     new_token_id=generated[-1],
+                    request_id=state.request_id,
                 )
+                decode_metadata = dict(getattr(decode_output, "metadata", {}))
+                state.block_table = _metadata_block_table(decode_metadata)
+                state.phase_metadata.append(decode_metadata)
                 self._emit_phase(
                     phase_callback,
                     state,
@@ -147,6 +160,7 @@ class Engine:
                     event="end",
                     token_index=decode_index,
                     num_tokens=len(context_token_ids),
+                    metadata=decode_metadata,
                 )
                 logits = decode_output.logits
 
@@ -175,6 +189,9 @@ class Engine:
         state.status = RequestStatus.FINISHED
         self.running.remove(state)
         self.finished.append(state)
+        free = getattr(runner, "free", None)
+        if callable(free):
+            free(state.request_id)
 
         if state.request_id != request_id:
             raise RuntimeError("Generated request state mismatch.")
@@ -190,6 +207,7 @@ class Engine:
         token_index: int | None,
         timestamp_ns: int | None = None,
         num_tokens: int | None = None,
+        metadata: dict[str, object] | None = None,
     ) -> None:
         if callback is None:
             return
@@ -201,6 +219,7 @@ class Engine:
                 token_index=token_index,
                 timestamp_ns=timestamp_ns or time.monotonic_ns(),
                 num_tokens=num_tokens,
+                metadata=metadata,
             )
         )
 
@@ -218,7 +237,9 @@ class Engine:
             from nano_serve.model.torch_runner import TorchModelRunner
 
             self.model_runner = TorchModelRunner.from_model_spec(
-                ModelSpec(model_path=Path(self.config.model_path), dtype="bfloat16")
+                ModelSpec(model_path=Path(self.config.model_path), dtype="bfloat16"),
+                kv_cache=self.config.kv_cache,
+                block_size=self.config.block_size,
             )
         return self.model_runner
 
@@ -229,4 +250,11 @@ class Engine:
         if eos_token_id is None:
             return set()
         return {int(eos_token_id)}
+
+
+def _metadata_block_table(metadata: dict[str, object]) -> list[int]:
+    blocks = metadata.get("kv_blocks_used")
+    if not isinstance(blocks, int) or blocks <= 0:
+        return []
+    return list(range(blocks))
 

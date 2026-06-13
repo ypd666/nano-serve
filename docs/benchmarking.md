@@ -29,6 +29,17 @@ Runs a fixed prompt set without simulating request arrival:
 - SM activity,
 - HBM bandwidth utilization.
 
+Phase 2 offline ablations use the same workload with different KV cache flags:
+
+```bash
+python -m nano_serve.cli phase1-offline --kv-cache none
+python -m nano_serve.cli phase1-offline --kv-cache contiguous
+```
+
+Both runs emit the same request latency metrics. The contiguous run also emits
+`kv_sequence_length`, `kv_blocks_used`, `kv_bytes_used`, and
+`kv_fragmentation` in phase events and request summaries.
+
 ### Online Serving
 
 Simulates request arrival and user-observed latency:
