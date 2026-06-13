@@ -82,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
         scp_command = [
             "scp",
             "-r",
-            f"{args.host}:{remote_run_dir}",
+            _remote_scp_source(args.host, args.remote_dir, remote_run_dir),
             str(args.fetch_dir),
         ]
         fetch = subprocess.run(scp_command, check=False)
@@ -149,10 +149,18 @@ def _dry_run_scp_command(args: argparse.Namespace, remote_run_dir: str) -> str:
     command = [
         "scp",
         "-r",
-        f"{args.host}:{remote_run_dir}",
+        _remote_scp_source(args.host, args.remote_dir, remote_run_dir),
         str(args.fetch_dir),
     ]
     return " ".join(shlex.quote(part) for part in command)
+
+
+def _remote_scp_source(host: str, remote_dir: str, remote_run_dir: str) -> str:
+    if remote_run_dir.startswith("/") or remote_run_dir.startswith("~"):
+        artifact_path = remote_run_dir
+    else:
+        artifact_path = f"{remote_dir.rstrip('/')}/{remote_run_dir}"
+    return f"{host}:{artifact_path}"
 
 
 if __name__ == "__main__":

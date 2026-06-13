@@ -15,6 +15,7 @@ from nano_serve.kernels.tilelang.availability import (
 from nano_serve.observability import read_jsonl_events
 from scripts.phase7_remote_tilelang import (
     _parse_remote_run_dir,
+    _remote_scp_source,
     main as remote_main,
 )
 
@@ -147,7 +148,7 @@ def test_phase7_remote_runner_dry_run(capsys) -> None:
     assert 'export PATH="$HOME/.local/bin:$PATH"' in output
     assert "phase7-kernels --require-tilelang" in output
     assert "scp -r" in output
-    assert "user@h100:<remote-run-dir>" in output
+    assert "user@h100:~/nano-serve-test/<remote-run-dir>" in output
     assert "remote-phase7" in output
 
 
@@ -160,3 +161,14 @@ def test_phase7_remote_runner_parses_remote_run_dir() -> None:
     )
 
     assert _parse_remote_run_dir(output) == "runs/phase7-h100/abc"
+
+
+def test_phase7_remote_runner_resolves_relative_artifact_paths() -> None:
+    assert (
+        _remote_scp_source("user@h100", "~/nano-serve", "runs/phase7-h100/abc")
+        == "user@h100:~/nano-serve/runs/phase7-h100/abc"
+    )
+    assert (
+        _remote_scp_source("user@h100", "~/nano-serve", "/tmp/phase7/abc")
+        == "user@h100:/tmp/phase7/abc"
+    )
