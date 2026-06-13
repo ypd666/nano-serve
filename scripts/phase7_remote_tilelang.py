@@ -58,7 +58,14 @@ def main(argv: list[str] | None = None) -> int:
             print(_dry_run_scp_command(args, "<remote-run-dir>"))
         return 0
 
-    result = subprocess.run(ssh_command, check=False, capture_output=True, text=True)
+    result = subprocess.run(
+        ssh_command,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     if result.stdout:
         print(result.stdout, end="")
     if result.stderr:
@@ -91,6 +98,7 @@ def _remote_command(args: argparse.Namespace) -> str:
     output_dir = shlex.quote(args.output_dir)
     commands = [
         "set -euo pipefail",
+        "export PATH=\"$HOME/.local/bin:$PATH\"",
         (
             f"if [ ! -d {remote_dir}/.git ]; then "
             f"git clone --branch {branch} {repo_url} {remote_dir}; "
@@ -118,7 +126,7 @@ def _remote_command(args: argparse.Namespace) -> str:
             "print('NANO_SERVE_REMOTE_RUN_DIR=' + str(summary.get('run_dir', '')))\""
         ),
     ]
-    return " && ".join(f"({command})" for command in commands)
+    return " && ".join(commands)
 
 
 def _parse_remote_run_dir(output: str) -> str | None:

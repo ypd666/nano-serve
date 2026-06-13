@@ -144,6 +144,7 @@ def test_phase7_remote_runner_dry_run(capsys) -> None:
     output = capsys.readouterr().out
     assert exit_code == 0
     assert "ssh user@h100" in output
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in output
     assert "phase7-kernels --require-tilelang" in output
     assert "scp -r" in output
     assert "user@h100:<remote-run-dir>" in output

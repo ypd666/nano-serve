@@ -72,6 +72,10 @@ host, creates the uv environment with `torch`, `tilelang`, and `dev` extras, and
 runs `phase7-kernels --require-tilelang`. With `--fetch-dir`, it copies the
 remote run directory back through `scp -r`.
 
+On H100 Linux, the TileLang import path is validated with the repository-local
+uv environment. `apache-tvm-ffi` is pinned to `0.1.11` because `0.1.12` can abort
+at import time with a duplicate `__ffi_repr__` type-attribute registration error.
+
 This slice is not the final Phase 7 performance milestone. The final milestone
 still requires a real TileLang paged decode attention kernel, a benchmark where
 it beats the torch gather reference for at least one documented shape, and NCU

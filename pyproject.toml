@@ -38,7 +38,7 @@ benchmark = [
 ]
 tilelang = [
   "tilelang==0.1.11",
-  "apache-tvm-ffi",
+  "apache-tvm-ffi==0.1.11",
   "cloudpickle",
   "ml-dtypes",
   "psutil",
