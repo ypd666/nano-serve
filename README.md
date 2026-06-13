@@ -237,11 +237,11 @@ compute-bound; decode is often more memory-bound.
 
 ### Phase 6: Paged Attention Reference
 
-- [ ] Implement torch gather-based paged attention.
-- [ ] Validate against contiguous KV attention.
-- [ ] Benchmark gather overhead.
-- [ ] Sweep block size and context length.
-- [ ] Use this backend as correctness reference for custom kernels.
+- [x] Implement torch gather-based paged attention.
+- [x] Validate against contiguous KV attention.
+- [x] Benchmark gather overhead.
+- [x] Sweep block size and context length.
+- [x] Use this backend as correctness reference for custom kernels.
 
 ### Phase 7: TileLang Kernels
 

@@ -75,9 +75,9 @@ roadmap; this file is the more operational backlog.
 - [x] Implement block table.
 - [x] Implement free list allocator.
 - [x] Implement append/free/OOM behavior.
-- [ ] Implement torch gather paged attention reference.
-- [ ] Validate correctness against contiguous KV.
-- [ ] Benchmark fragmentation and gather overhead.
+- [x] Implement torch gather paged attention reference.
+- [x] Validate correctness against contiguous KV.
+- [x] Benchmark fragmentation and gather overhead.
 
 ## M7: TileLang Kernels
 

@@ -79,6 +79,26 @@ The paged-KV run emits `paged_kv_prefill`, `paged_kv_decode_end`,
 used tokens, allocated token capacity, internal fragmentation, OOM count, and
 max resident requests.
 
+Phase 6 paged-attention benchmarks isolate the torch gather reference path:
+
+```bash
+python -m nano_serve.cli phase6-attention \
+  --batch-size 2 \
+  --query-heads 8 \
+  --kv-heads 2 \
+  --head-dim 64 \
+  --context-lens 128,512,1024 \
+  --block-sizes 8,16,32 \
+  --repeats 5
+```
+
+The paged-attention run emits `paged_attention_case` events. Each case records
+batch size, query/KV heads, head dimension, context length, block size, gather
+time, attention time, temporary gather bytes, and max absolute difference
+against contiguous attention. The run config records
+`attention_backend="torch_gather_paged"` and `kv_cache="paged"` so later
+TileLang kernels can use the same sweep as an ablation baseline.
+
 ### Online Serving
 
 Simulates request arrival and user-observed latency:

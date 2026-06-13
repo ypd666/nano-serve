@@ -11,6 +11,10 @@ from nano_serve.assets import download_assets_from_env, env_template
 from nano_serve.benchmark.compare import compare_runs, render_compare_markdown
 from nano_serve.benchmark.offline import OfflineBenchmarkConfig, run_offline_benchmark
 from nano_serve.benchmark.phase5 import Phase5KVBenchmarkConfig, run_phase5_kv_benchmark
+from nano_serve.benchmark.phase6 import (
+    Phase6PagedAttentionBenchmarkConfig,
+    run_phase6_paged_attention_benchmark,
+)
 from nano_serve.benchmark.phase0 import Phase0SmokeConfig, run_phase0_smoke
 from nano_serve.engine.config import EngineConfig
 from nano_serve.scheduler.policies import SchedulerPolicy
@@ -77,6 +81,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_phase5_kv_args(phase5)
     phase5.set_defaults(func=_phase5_kv)
 
+    phase6 = subcommands.add_parser(
+        "phase6-attention",
+        help="Run the Phase 6 torch gather paged-attention benchmark.",
+    )
+    _add_phase6_attention_args(phase6)
+    phase6.set_defaults(func=_phase6_attention)
+
     bench = subcommands.add_parser("bench", help="Benchmark helper commands.")
     bench_commands = bench.add_subparsers(dest="bench_command")
     bench_dummy = bench_commands.add_parser(
@@ -97,6 +108,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_phase5_kv_args(bench_kv)
     bench_kv.set_defaults(func=_phase5_kv)
+    bench_attention = bench_commands.add_parser(
+        "attention",
+        help="Alias for the Phase 6 torch gather paged-attention benchmark.",
+    )
+    _add_phase6_attention_args(bench_attention)
+    bench_attention.set_defaults(func=_phase6_attention)
     bench_compare = bench_commands.add_parser(
         "compare",
         help="Compare two benchmark run summaries or run directories.",
@@ -228,6 +245,31 @@ def _add_phase5_kv_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--seed", type=int, default=0, help="random seed")
 
 
+def _add_phase6_attention_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("runs/phase6"),
+        help="directory for run artifacts",
+    )
+    parser.add_argument("--batch-size", type=int, default=2, help="query batch size")
+    parser.add_argument("--query-heads", type=int, default=8, help="number of query heads")
+    parser.add_argument("--kv-heads", type=int, default=2, help="number of KV heads")
+    parser.add_argument("--head-dim", type=int, default=64, help="attention head dimension")
+    parser.add_argument(
+        "--context-lens",
+        default="128,512,1024",
+        help="comma-separated context lengths to sweep",
+    )
+    parser.add_argument(
+        "--block-sizes",
+        default="8,16,32",
+        help="comma-separated paged KV block sizes to sweep",
+    )
+    parser.add_argument("--repeats", type=int, default=5, help="repeats per sweep case")
+    parser.add_argument("--seed", type=int, default=0, help="random seed")
+
+
 def _assets_env(_: argparse.Namespace) -> int:
     print(env_template())
     return 0
@@ -305,6 +347,24 @@ def _phase5_kv(args: argparse.Namespace) -> int:
     return 0
 
 
+def _phase6_attention(args: argparse.Namespace) -> int:
+    summary = run_phase6_paged_attention_benchmark(
+        Phase6PagedAttentionBenchmarkConfig(
+            output_dir=args.output_dir,
+            batch_size=args.batch_size,
+            query_heads=args.query_heads,
+            kv_heads=args.kv_heads,
+            head_dim=args.head_dim,
+            context_lens=_parse_int_list(args.context_lens, name="context_lens"),
+            block_sizes=_parse_int_list(args.block_sizes, name="block_sizes"),
+            repeats=args.repeats,
+            seed=args.seed,
+        )
+    )
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
 def _bench_compare(args: argparse.Namespace) -> int:
     comparison = compare_runs(args.base, args.candidate)
     if args.format == "json":
@@ -316,6 +376,13 @@ def _bench_compare(args: argparse.Namespace) -> int:
 
 def _not_implemented(_: argparse.Namespace) -> int:
     raise NotImplementedError("Server mode is not implemented yet.")
+
+
+def _parse_int_list(raw: str, *, name: str) -> tuple[int, ...]:
+    values = tuple(int(value.strip()) for value in raw.split(",") if value.strip())
+    if not values:
+        raise ValueError(f"{name} must contain at least one integer")
+    return values
 
 
 def main(argv: list[str] | None = None) -> int:

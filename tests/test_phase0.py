@@ -7,6 +7,10 @@ from nano_serve.benchmark.compare import compare_runs, render_compare_markdown
 from nano_serve.benchmark.datasets import load_sharegpt_dataset
 from nano_serve.benchmark.offline import OfflineBenchmarkConfig, run_offline_benchmark
 from nano_serve.benchmark.phase5 import Phase5KVBenchmarkConfig, run_phase5_kv_benchmark
+from nano_serve.benchmark.phase6 import (
+    Phase6PagedAttentionBenchmarkConfig,
+    run_phase6_paged_attention_benchmark,
+)
 from nano_serve.benchmark.phase0 import Phase0SmokeConfig, run_phase0_smoke
 from nano_serve.engine.core import BatchEvent
 from nano_serve.cli import main
@@ -278,6 +282,43 @@ def test_phase5_kv_benchmark_writes_allocator_events(tmp_path: Path) -> None:
     assert events[0]["name"] == "run_start"
     assert any(event["name"] == "paged_kv_prefill" for event in events)
     assert any(event["name"] == "paged_kv_free" for event in events)
+    assert events[-1]["name"] == "run_end"
+
+
+def test_phase6_attention_benchmark_writes_case_events(tmp_path: Path) -> None:
+    summary = run_phase6_paged_attention_benchmark(
+        Phase6PagedAttentionBenchmarkConfig(
+            output_dir=tmp_path / "phase6-runs",
+            batch_size=1,
+            query_heads=2,
+            kv_heads=1,
+            head_dim=4,
+            context_lens=(4,),
+            block_sizes=(2,),
+            repeats=1,
+            seed=0,
+        )
+    )
+
+    assert summary["status"] == "ok"
+    assert summary["phase"] == "phase6"
+    assert summary["max_abs_diff"] == 0.0
+    assert summary["max_gather_temp_bytes"] > 0
+    engine_config = summary["engine_config"]
+    assert isinstance(engine_config, dict)
+    assert engine_config["attention_backend"] == "torch_gather_paged"
+    assert engine_config["kv_cache"] == "paged"
+
+    events = read_jsonl_events(Path(summary["artifacts"]["events"]))
+    case_events = [event for event in events if event["name"] == "paged_attention_case"]
+    assert len(case_events) == 1
+    fields = case_events[0]["fields"]
+    assert fields["context_len"] == 4
+    assert fields["block_size"] == 2
+    assert "gather_time_ms" in fields
+    assert "attention_time_ms" in fields
+    assert "gather_temp_bytes" in fields
+    assert "max_abs_diff" in fields
     assert events[-1]["name"] == "run_end"
 
 
