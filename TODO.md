@@ -71,10 +71,10 @@ roadmap; this file is the more operational backlog.
 
 ## M5-M6: Paged KV and Reference Paged Attention
 
-- [ ] Implement KV blocks.
-- [ ] Implement block table.
-- [ ] Implement free list allocator.
-- [ ] Implement append/free/OOM behavior.
+- [x] Implement KV blocks.
+- [x] Implement block table.
+- [x] Implement free list allocator.
+- [x] Implement append/free/OOM behavior.
 - [ ] Implement torch gather paged attention reference.
 - [ ] Validate correctness against contiguous KV.
 - [ ] Benchmark fragmentation and gather overhead.

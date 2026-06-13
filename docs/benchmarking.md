@@ -68,6 +68,17 @@ The continuous run emits `continuous_iteration_start/end` and
 `num_running_reqs`, `num_waiting_reqs`, `cpu_schedule_time_ms`,
 `padded_tokens`, and `request_ids`.
 
+Phase 5 allocator benchmarks exercise paged KV without loading model weights:
+
+```bash
+python -m nano_serve.cli phase5-kv --num-blocks 128 --block-size 16
+```
+
+The paged-KV run emits `paged_kv_prefill`, `paged_kv_decode_end`,
+`paged_kv_free`, and `paged_kv_oom` events. Summaries record used/free blocks,
+used tokens, allocated token capacity, internal fragmentation, OOM count, and
+max resident requests.
+
 ### Online Serving
 
 Simulates request arrival and user-observed latency:

@@ -10,6 +10,7 @@ from nano_serve import __version__
 from nano_serve.assets import download_assets_from_env, env_template
 from nano_serve.benchmark.compare import compare_runs, render_compare_markdown
 from nano_serve.benchmark.offline import OfflineBenchmarkConfig, run_offline_benchmark
+from nano_serve.benchmark.phase5 import Phase5KVBenchmarkConfig, run_phase5_kv_benchmark
 from nano_serve.benchmark.phase0 import Phase0SmokeConfig, run_phase0_smoke
 from nano_serve.engine.config import EngineConfig
 from nano_serve.scheduler.policies import SchedulerPolicy
@@ -69,6 +70,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_phase1_offline_args(phase1)
     phase1.set_defaults(func=_phase1_offline)
 
+    phase5 = subcommands.add_parser(
+        "phase5-kv",
+        help="Run the Phase 5 paged KV allocator benchmark.",
+    )
+    _add_phase5_kv_args(phase5)
+    phase5.set_defaults(func=_phase5_kv)
+
     bench = subcommands.add_parser("bench", help="Benchmark helper commands.")
     bench_commands = bench.add_subparsers(dest="bench_command")
     bench_dummy = bench_commands.add_parser(
@@ -83,6 +91,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_phase1_offline_args(bench_offline)
     bench_offline.set_defaults(func=_phase1_offline)
+    bench_kv = bench_commands.add_parser(
+        "kv",
+        help="Alias for the Phase 5 paged KV allocator benchmark.",
+    )
+    _add_phase5_kv_args(bench_kv)
+    bench_kv.set_defaults(func=_phase5_kv)
     bench_compare = bench_commands.add_parser(
         "compare",
         help="Compare two benchmark run summaries or run directories.",
@@ -189,6 +203,31 @@ def _add_phase1_offline_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_phase5_kv_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("runs/phase5"),
+        help="directory for run artifacts",
+    )
+    parser.add_argument("--num-blocks", type=int, default=128, help="number of KV blocks")
+    parser.add_argument("--block-size", type=int, default=16, help="tokens per KV block")
+    parser.add_argument("--num-requests", type=int, default=64, help="requests to simulate")
+    parser.add_argument(
+        "--max-prefill-tokens",
+        type=int,
+        default=128,
+        help="maximum prefill length per request",
+    )
+    parser.add_argument(
+        "--max-decode-tokens",
+        type=int,
+        default=64,
+        help="maximum decode append tokens per request",
+    )
+    parser.add_argument("--seed", type=int, default=0, help="random seed")
+
+
 def _assets_env(_: argparse.Namespace) -> int:
     print(env_template())
     return 0
@@ -244,6 +283,22 @@ def _phase1_offline(args: argparse.Namespace) -> int:
             scheduler_policy=SchedulerPolicy(args.scheduler_policy),
             batch_size=args.batch_size,
             max_num_batched_tokens=args.max_num_batched_tokens,
+        )
+    )
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
+def _phase5_kv(args: argparse.Namespace) -> int:
+    summary = run_phase5_kv_benchmark(
+        Phase5KVBenchmarkConfig(
+            output_dir=args.output_dir,
+            num_blocks=args.num_blocks,
+            block_size=args.block_size,
+            num_requests=args.num_requests,
+            max_prefill_tokens=args.max_prefill_tokens,
+            max_decode_tokens=args.max_decode_tokens,
+            seed=args.seed,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))

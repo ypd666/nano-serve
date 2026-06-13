@@ -6,6 +6,7 @@ from pathlib import Path
 from nano_serve.benchmark.compare import compare_runs, render_compare_markdown
 from nano_serve.benchmark.datasets import load_sharegpt_dataset
 from nano_serve.benchmark.offline import OfflineBenchmarkConfig, run_offline_benchmark
+from nano_serve.benchmark.phase5 import Phase5KVBenchmarkConfig, run_phase5_kv_benchmark
 from nano_serve.benchmark.phase0 import Phase0SmokeConfig, run_phase0_smoke
 from nano_serve.engine.core import BatchEvent
 from nano_serve.cli import main
@@ -252,6 +253,32 @@ def test_continuous_offline_benchmark_writes_iteration_events(
     ]
     assert events[3]["fields"]["batch_kind"] == "PREFILL"
     assert events[3]["fields"]["num_waiting_reqs"] == 1
+
+
+def test_phase5_kv_benchmark_writes_allocator_events(tmp_path: Path) -> None:
+    summary = run_phase5_kv_benchmark(
+        Phase5KVBenchmarkConfig(
+            output_dir=tmp_path / "phase5-runs",
+            num_blocks=4,
+            block_size=2,
+            num_requests=3,
+            max_prefill_tokens=3,
+            max_decode_tokens=2,
+            seed=0,
+        )
+    )
+
+    assert summary["status"] == "ok"
+    assert summary["phase"] == "phase5"
+    assert summary["num_blocks"] == 4
+    assert "internal_fragmentation" in summary["peak"]
+    assert "oom_count" in summary["final"]
+
+    events = read_jsonl_events(Path(summary["artifacts"]["events"]))
+    assert events[0]["name"] == "run_start"
+    assert any(event["name"] == "paged_kv_prefill" for event in events)
+    assert any(event["name"] == "paged_kv_free" for event in events)
+    assert events[-1]["name"] == "run_end"
 
 
 def test_compare_runs(tmp_path: Path) -> None:

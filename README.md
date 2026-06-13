@@ -226,14 +226,14 @@ compute-bound; decode is often more memory-bound.
 
 ### Phase 5: Paged KV Cache
 
-- [ ] Implement fixed-size KV blocks.
-- [ ] Implement free block allocator.
-- [ ] Implement block table.
-- [ ] Implement append-token block allocation.
-- [ ] Implement block release.
-- [ ] Track KV internal fragmentation.
-- [ ] Implement OOM behavior.
-- [ ] Add randomized allocator tests.
+- [x] Implement fixed-size KV blocks.
+- [x] Implement free block allocator.
+- [x] Implement block table.
+- [x] Implement append-token block allocation.
+- [x] Implement block release.
+- [x] Track KV internal fragmentation.
+- [x] Implement OOM behavior.
+- [x] Add randomized allocator tests.
 
 ### Phase 6: Paged Attention Reference
 

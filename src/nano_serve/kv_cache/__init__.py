@@ -8,6 +8,7 @@ from nano_serve.kv_cache.contiguous import (
     ContiguousKVCacheStats,
     ContiguousLayerState,
 )
+from nano_serve.kv_cache.paged import PagedKVCache, PagedKVStats
 
 __all__ = [
     "BlockTable",
@@ -17,4 +18,6 @@ __all__ = [
     "ContiguousLayerState",
     "KVCacheManager",
     "KVHandle",
+    "PagedKVCache",
+    "PagedKVStats",
 ]

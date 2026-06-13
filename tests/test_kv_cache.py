@@ -88,6 +88,92 @@ def test_contiguous_kv_rejects_wrong_prefill_shape() -> None:
         cache.write_prefill("req-a", bad_keys, values)
 
 
+def test_paged_kv_prefill_append_free_and_reuse() -> None:
+    from nano_serve.kv_cache.paged import PagedKVCache
+
+    cache = PagedKVCache(num_blocks=4, block_size=2)
+    handle = cache.allocate_prefill("req-a", 3)
+
+    assert handle.block_ids == [0, 1]
+    assert cache.get_block_table("req-a") == [0, 1]
+    assert cache.blocks[0].used_tokens == 2
+    assert cache.blocks[1].used_tokens == 1
+
+    handle = cache.allocate_decode_slot("req-a")
+
+    assert handle.num_tokens == 4
+    assert handle.block_ids == [0, 1]
+    assert cache.blocks[1].used_tokens == 2
+
+    handle = cache.allocate_decode_slot("req-a")
+
+    assert handle.num_tokens == 5
+    assert handle.block_ids == [0, 1, 2]
+    assert cache.blocks[2].used_tokens == 1
+    assert cache.stats().internal_fragmentation == pytest.approx(1 / 6)
+
+    cache.free("req-a")
+
+    assert cache.get_block_table("req-a") == []
+    assert cache.stats().free_blocks == 4
+    assert cache.allocate_prefill("req-b", 1).block_ids == [0]
+
+
+def test_paged_kv_oom_tracks_failure_count() -> None:
+    from nano_serve.kv_cache.paged import PagedKVCache
+
+    cache = PagedKVCache(num_blocks=1, block_size=2)
+    cache.allocate_prefill("req-a", 2)
+
+    with pytest.raises(MemoryError, match="out of blocks"):
+        cache.allocate_decode_slot("req-a")
+
+    assert cache.stats().oom_count == 1
+
+
+def test_paged_kv_randomized_invariants() -> None:
+    import random
+
+    from nano_serve.kv_cache.paged import PagedKVCache
+
+    rng = random.Random(0)
+    cache = PagedKVCache(num_blocks=16, block_size=4)
+    live: dict[str, int] = {}
+
+    for step in range(100):
+        if live and rng.random() < 0.35:
+            request_id = rng.choice(list(live))
+            cache.free(request_id)
+            live.pop(request_id)
+            continue
+
+        request_id = f"req-{step}"
+        n_tokens = rng.randint(1, 12)
+        try:
+            cache.allocate_prefill(request_id, n_tokens)
+        except MemoryError:
+            assert cache.stats().oom_count > 0
+            continue
+        live[request_id] = n_tokens
+
+        for _ in range(rng.randint(0, 5)):
+            try:
+                cache.allocate_decode_slot(request_id)
+            except MemoryError:
+                assert cache.stats().oom_count > 0
+                break
+            live[request_id] += 1
+
+        stats = cache.stats()
+        assert stats.used_tokens == sum(live.values())
+        assert stats.used_blocks + stats.free_blocks == stats.num_blocks
+        assert 0.0 <= stats.internal_fragmentation <= 1.0
+        for live_request_id, seq_len in live.items():
+            assert len(cache.get_block_table(live_request_id)) == (
+                seq_len + cache.block_size - 1
+            ) // cache.block_size
+
+
 def _make_contiguous_cache(*, max_tokens: int):
     import torch
 

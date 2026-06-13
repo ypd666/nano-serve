@@ -18,3 +18,9 @@ class BlockTable:
     block_ids: list[int] = field(default_factory=list)
     seq_len: int = 0
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "request_id": self.request_id,
+            "block_ids": list(self.block_ids),
+            "seq_len": self.seq_len,
+        }
