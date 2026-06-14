@@ -14,8 +14,14 @@ from typing import cast
 
 from nano_serve.assets import AssetConfig
 from nano_serve.benchmark.datasets import ServingSample, load_sharegpt_dataset
+from nano_serve.benchmark.profiler import nvtx_label, nvtx_range
 from nano_serve.benchmark.report import write_markdown_report
-from nano_serve.engine.config import EngineConfig, KVCacheKind, SchedulerKind
+from nano_serve.engine.config import (
+    BenchmarkConfig,
+    EngineConfig,
+    KVCacheKind,
+    SchedulerKind,
+)
 from nano_serve.engine.core import BatchEvent, Engine, PhaseEvent, StreamEvent
 from nano_serve.model.tokenizer import TokenizerWrapper
 from nano_serve.observability import Event, JSONLEventWriter, platform_event
@@ -37,6 +43,7 @@ class OfflineBenchmarkConfig:
     batch_size: int = 1
     max_num_batched_tokens: int = 4096
     max_prefill_chunk_tokens: int = 1024
+    enable_nvtx: bool = False
 
 
 @dataclass(frozen=True)
@@ -128,6 +135,7 @@ def run_offline_benchmark(config: OfflineBenchmarkConfig) -> dict[str, object]:
         max_num_seqs=config.batch_size,
         max_num_batched_tokens=config.max_num_batched_tokens,
         max_prefill_chunk_tokens=config.max_prefill_chunk_tokens,
+        benchmark=BenchmarkConfig(enable_nvtx=config.enable_nvtx),
     )
     run_config = {
         "run_id": run_id,
@@ -139,6 +147,7 @@ def run_offline_benchmark(config: OfflineBenchmarkConfig) -> dict[str, object]:
         "batch_size": config.batch_size,
         "max_num_batched_tokens": config.max_num_batched_tokens,
         "max_prefill_chunk_tokens": config.max_prefill_chunk_tokens,
+        "enable_nvtx": config.enable_nvtx,
         "num_samples": config.num_samples,
         "max_new_tokens": config.max_new_tokens,
         "max_prompt_tokens": config.max_prompt_tokens,
@@ -163,7 +172,10 @@ def run_offline_benchmark(config: OfflineBenchmarkConfig) -> dict[str, object]:
     request_summaries: list[RequestBenchmarkSummary] = []
     batch_summaries: list[BatchBenchmarkSummary] = []
     run_start_ns = time.monotonic_ns()
-    with JSONLEventWriter(events_path) as writer:
+    with (
+        JSONLEventWriter(events_path) as writer,
+        nvtx_range(nvtx_label(_phase_name(config), "run"), enabled=config.enable_nvtx),
+    ):
         writer.write(Event("run_start", fields={"run_id": run_id, "workload": config.workload}))
         writer.write(platform_event(platform_info))
         writer.write(
@@ -260,12 +272,21 @@ def run_offline_benchmark(config: OfflineBenchmarkConfig) -> dict[str, object]:
                     )
                 )
 
-            output_token_ids = engine.generate(
-                prompt_token_ids,
-                params,
-                stream_callback,
-                phase_callback,
-            )
+            with nvtx_range(
+                nvtx_label(
+                    _phase_name(config),
+                    "request",
+                    batch_id=batch_id,
+                    sample_id=sample.sample_id,
+                ),
+                enabled=config.enable_nvtx,
+            ):
+                output_token_ids = engine.generate(
+                    prompt_token_ids,
+                    params,
+                    stream_callback,
+                    phase_callback,
+                )
             request_end_ns = time.monotonic_ns()
             state = engine.finished[before_finished]
             kv_metadata = _latest_kv_metadata(state)
@@ -448,12 +469,16 @@ def _run_static_batch(
             )
         )
 
-    output_token_ids_batch = engine.generate_static_batch(
-        list(zip(prompt_token_ids_batch, sampling_params, strict=True)),
-        request_ids=request_ids,
-        stream_callback=stream_callback,
-        batch_callback=batch_callback,
-    )
+    with nvtx_range(
+        nvtx_label("phase3", "batch", batch_id=batch_id, batch_size=len(samples)),
+        enabled=config.enable_nvtx,
+    ):
+        output_token_ids_batch = engine.generate_static_batch(
+            list(zip(prompt_token_ids_batch, sampling_params, strict=True)),
+            request_ids=request_ids,
+            stream_callback=stream_callback,
+            batch_callback=batch_callback,
+        )
     batch_end_ns = time.monotonic_ns()
     states = engine.finished[before_finished : before_finished + len(samples)]
     if len(states) != len(samples):
@@ -567,20 +592,30 @@ def _run_continuous_batch(
         list[tuple[list[int], SamplingParams | None]],
         list(zip(prompt_token_ids_batch, sampling_params, strict=True)),
     )
-    if config.scheduler == "chunked_prefill":
-        output_token_ids_batch = engine.generate_chunked_prefill(
-            request_batch,
-            request_ids=request_ids,
-            stream_callback=stream_callback,
-            batch_callback=batch_callback,
-        )
-    else:
-        output_token_ids_batch = engine.generate_continuous(
-            request_batch,
-            request_ids=request_ids,
-            stream_callback=stream_callback,
-            batch_callback=batch_callback,
-        )
+    with nvtx_range(
+        nvtx_label(
+            _phase_name(config),
+            "batch",
+            batch_id=batch_id,
+            batch_size=len(samples),
+            scheduler=config.scheduler,
+        ),
+        enabled=config.enable_nvtx,
+    ):
+        if config.scheduler == "chunked_prefill":
+            output_token_ids_batch = engine.generate_chunked_prefill(
+                request_batch,
+                request_ids=request_ids,
+                stream_callback=stream_callback,
+                batch_callback=batch_callback,
+            )
+        else:
+            output_token_ids_batch = engine.generate_continuous(
+                request_batch,
+                request_ids=request_ids,
+                stream_callback=stream_callback,
+                batch_callback=batch_callback,
+            )
     batch_end_ns = time.monotonic_ns()
     states = engine.finished[before_finished : before_finished + len(samples)]
     if len(states) != len(samples):
@@ -788,4 +823,3 @@ def _git_commit() -> str | None:
     if result.returncode != 0:
         return None
     return result.stdout.strip()
-

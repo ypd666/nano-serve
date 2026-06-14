@@ -11,8 +11,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from nano_serve.benchmark.profiler import nvtx_label, nvtx_range
 from nano_serve.benchmark.report import write_markdown_report
-from nano_serve.engine.config import EngineConfig
+from nano_serve.engine.config import BenchmarkConfig, EngineConfig
 from nano_serve.observability import Event, JSONLEventWriter, platform_event
 from nano_serve.platform import detect_platform
 
@@ -28,6 +29,7 @@ class Phase8ChunkedPrefillBenchmarkConfig:
     max_num_batched_tokens: int = 4096
     prefill_token_time_ms: float = 0.02
     decode_token_time_ms: float = 0.05
+    enable_nvtx: bool = False
 
 
 @dataclass
@@ -69,6 +71,7 @@ def run_phase8_chunked_prefill_benchmark(
         max_num_seqs=config.max_num_seqs,
         max_num_batched_tokens=config.max_num_batched_tokens,
         max_prefill_chunk_tokens=config.chunk_sizes[0],
+        benchmark=BenchmarkConfig(enable_nvtx=config.enable_nvtx),
     )
 
     chunk_sizes = _normalized_chunk_sizes(config)
@@ -85,6 +88,7 @@ def run_phase8_chunked_prefill_benchmark(
         "max_num_batched_tokens": config.max_num_batched_tokens,
         "prefill_token_time_ms": config.prefill_token_time_ms,
         "decode_token_time_ms": config.decode_token_time_ms,
+        "enable_nvtx": config.enable_nvtx,
         "engine_config": engine_config.to_dict(),
         "platform": platform_info.to_dict(),
     }
@@ -92,11 +96,18 @@ def run_phase8_chunked_prefill_benchmark(
 
     cases: list[dict[str, object]] = []
     start_ns = time.monotonic_ns()
-    with JSONLEventWriter(events_path) as writer:
+    with (
+        JSONLEventWriter(events_path) as writer,
+        nvtx_range(nvtx_label("phase8", "run"), enabled=config.enable_nvtx),
+    ):
         writer.write(Event("run_start", fields={"run_id": run_id, "phase": "phase8"}))
         writer.write(platform_event(platform_info))
         for chunk_size in chunk_sizes:
-            case = _simulate_case(config, chunk_size=chunk_size, writer=writer)
+            with nvtx_range(
+                nvtx_label("phase8", "case", chunk_size=chunk_size),
+                enabled=config.enable_nvtx,
+            ):
+                case = _simulate_case(config, chunk_size=chunk_size, writer=writer)
             cases.append(case)
             writer.write(Event("chunked_prefill_case", fields=case))
         _write_frontier_plot(plot_path, cases)

@@ -275,6 +275,7 @@ def _add_phase0_smoke_args(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="opt into the heavy full model load path",
     )
+    _add_nvtx_args(parser)
 
 
 def _add_phase1_offline_args(parser: argparse.ArgumentParser) -> None:
@@ -343,6 +344,7 @@ def _add_phase1_offline_args(parser: argparse.ArgumentParser) -> None:
         default=1024,
         help="maximum prompt tokens selected per chunked-prefill request",
     )
+    _add_nvtx_args(parser)
 
 
 def _add_phase5_kv_args(parser: argparse.ArgumentParser) -> None:
@@ -368,6 +370,7 @@ def _add_phase5_kv_args(parser: argparse.ArgumentParser) -> None:
         help="maximum decode append tokens per request",
     )
     parser.add_argument("--seed", type=int, default=0, help="random seed")
+    _add_nvtx_args(parser)
 
 
 def _add_phase6_attention_args(parser: argparse.ArgumentParser) -> None:
@@ -393,6 +396,7 @@ def _add_phase6_attention_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--repeats", type=int, default=5, help="repeats per sweep case")
     parser.add_argument("--seed", type=int, default=0, help="random seed")
+    _add_nvtx_args(parser)
 
 
 def _add_phase7_kernel_args(parser: argparse.ArgumentParser) -> None:
@@ -422,6 +426,7 @@ def _add_phase7_kernel_args(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="record Nsight Compute profiling intent in benchmark artifacts",
     )
+    _add_nvtx_args(parser)
 
 
 def _add_phase8_chunked_prefill_args(parser: argparse.ArgumentParser) -> None:
@@ -478,6 +483,7 @@ def _add_phase8_chunked_prefill_args(parser: argparse.ArgumentParser) -> None:
         default=0.05,
         help="simulated cost per decode token",
     )
+    _add_nvtx_args(parser)
 
 
 def _add_phase9_prefix_cache_args(parser: argparse.ArgumentParser) -> None:
@@ -514,6 +520,7 @@ def _add_phase9_prefix_cache_args(parser: argparse.ArgumentParser) -> None:
         default=0.02,
         help="simulated cost per prefill token",
     )
+    _add_nvtx_args(parser)
 
 
 def _add_phase10_overlap_graph_args(parser: argparse.ArgumentParser) -> None:
@@ -547,6 +554,7 @@ def _add_phase10_overlap_graph_args(parser: argparse.ArgumentParser) -> None:
         help="skip the CUDA graph experiment",
     )
     parser.add_argument("--seed", type=int, default=0, help="random seed")
+    _add_nvtx_args(parser)
 
 
 def _add_phase11_speculative_args(parser: argparse.ArgumentParser) -> None:
@@ -576,6 +584,7 @@ def _add_phase11_speculative_args(parser: argparse.ArgumentParser) -> None:
         default=0.1,
         help="simulated draft model time per proposed token",
     )
+    _add_nvtx_args(parser)
 
 
 def _add_phase12_advanced_args(parser: argparse.ArgumentParser) -> None:
@@ -590,6 +599,7 @@ def _add_phase12_advanced_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tokens", type=int, default=1024, help="KV tokens to quantize")
     parser.add_argument("--batch-size", type=int, default=8, help="LoRA batch size")
     parser.add_argument("--seed", type=int, default=0, help="random seed")
+    _add_nvtx_args(parser)
 
 
 def _add_phase13_distributed_args(parser: argparse.ArgumentParser) -> None:
@@ -605,6 +615,15 @@ def _add_phase13_distributed_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--microbatches", type=int, default=4, help="pipeline microbatches")
     parser.add_argument("--num-experts", type=int, default=8, help="expert count")
     parser.add_argument("--seed", type=int, default=0, help="random seed")
+    _add_nvtx_args(parser)
+
+
+def _add_nvtx_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--enable-nvtx",
+        action="store_true",
+        help="enable NVTX ranges for Nsight profiling",
+    )
 
 
 def _assets_env(_: argparse.Namespace) -> int:
@@ -643,6 +662,7 @@ def _phase0_smoke(args: argparse.Namespace) -> int:
             output_dir=args.output_dir,
             num_samples=args.num_samples,
             load_model=args.load_model,
+            enable_nvtx=args.enable_nvtx,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
@@ -663,6 +683,7 @@ def _phase1_offline(args: argparse.Namespace) -> int:
             batch_size=args.batch_size,
             max_num_batched_tokens=args.max_num_batched_tokens,
             max_prefill_chunk_tokens=args.max_prefill_chunk_tokens,
+            enable_nvtx=args.enable_nvtx,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
@@ -679,6 +700,7 @@ def _phase5_kv(args: argparse.Namespace) -> int:
             max_prefill_tokens=args.max_prefill_tokens,
             max_decode_tokens=args.max_decode_tokens,
             seed=args.seed,
+            enable_nvtx=args.enable_nvtx,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
@@ -697,6 +719,7 @@ def _phase6_attention(args: argparse.Namespace) -> int:
             block_sizes=_parse_int_list(args.block_sizes, name="block_sizes"),
             repeats=args.repeats,
             seed=args.seed,
+            enable_nvtx=args.enable_nvtx,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
@@ -719,6 +742,7 @@ def _phase7_kernels(args: argparse.Namespace) -> int:
             seed=args.seed,
             require_tilelang=args.require_tilelang,
             enable_ncu=args.enable_ncu,
+            enable_nvtx=args.enable_nvtx,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
@@ -737,6 +761,7 @@ def _phase8_chunked_prefill(args: argparse.Namespace) -> int:
             max_num_batched_tokens=args.max_num_batched_tokens,
             prefill_token_time_ms=args.prefill_token_time_ms,
             decode_token_time_ms=args.decode_token_time_ms,
+            enable_nvtx=args.enable_nvtx,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
@@ -754,6 +779,7 @@ def _phase9_prefix_cache(args: argparse.Namespace) -> int:
             cache_blocks=args.cache_blocks,
             max_prefix_entries=args.max_prefix_entries,
             prefill_token_time_ms=args.prefill_token_time_ms,
+            enable_nvtx=args.enable_nvtx,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
@@ -775,6 +801,7 @@ def _phase10_overlap_graphs(args: argparse.Namespace) -> int:
             enable_torch_compile=not args.disable_torch_compile,
             enable_cuda_graph=not args.disable_cuda_graph,
             seed=args.seed,
+            enable_nvtx=args.enable_nvtx,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
@@ -791,6 +818,7 @@ def _phase11_speculative(args: argparse.Namespace) -> int:
             prompt_tokens=args.prompt_tokens,
             target_step_time_ms=args.target_step_time_ms,
             draft_token_time_ms=args.draft_token_time_ms,
+            enable_nvtx=args.enable_nvtx,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
@@ -806,6 +834,7 @@ def _phase12_advanced(args: argparse.Namespace) -> int:
             tokens=args.tokens,
             batch_size=args.batch_size,
             seed=args.seed,
+            enable_nvtx=args.enable_nvtx,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
@@ -822,6 +851,7 @@ def _phase13_distributed(args: argparse.Namespace) -> int:
             microbatches=args.microbatches,
             num_experts=args.num_experts,
             seed=args.seed,
+            enable_nvtx=args.enable_nvtx,
         )
     )
     print(json.dumps(summary, indent=2, sort_keys=True))

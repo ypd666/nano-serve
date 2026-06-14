@@ -12,6 +12,7 @@ from typing import Any
 from nano_serve.engine.batch import BatchKind, BatchPlan
 from nano_serve.engine.config import EngineConfig
 from nano_serve.engine.request import RequestMetrics, RequestState, RequestStatus
+from nano_serve.observability.tracing import nvtx_range
 from nano_serve.sampling.base import SamplingParams
 from nano_serve.sampling.greedy import GreedySampler
 from nano_serve.sampling.topk_topp import TopKTopPSampler
@@ -106,15 +107,16 @@ class Engine:
             return False
 
         scheduler = ContinuousScheduler(self.config.scheduler_policy)
-        plan = scheduler.schedule(
-            waiting=self.waiting,
-            running=self.running,
-            kv_cache=None,
-            budget=ScheduleBudget(
-                max_num_seqs=self.config.max_num_seqs,
-                max_num_batched_tokens=self.config.max_num_batched_tokens,
-            ),
-        )
+        with self._nvtx("nano_serve.scheduler.continuous"):
+            plan = scheduler.schedule(
+                waiting=self.waiting,
+                running=self.running,
+                kv_cache=None,
+                budget=ScheduleBudget(
+                    max_num_seqs=self.config.max_num_seqs,
+                    max_num_batched_tokens=self.config.max_num_batched_tokens,
+                ),
+            )
         if not plan.request_ids:
             return False
 
@@ -131,17 +133,19 @@ class Engine:
             else:
                 state.status = RequestStatus.DECODE
 
-        self._emit_plan_batch(
-            batch_callback,
-            event="iteration_start",
-            iteration=iteration,
-            plan=plan,
-        )
-        runner = self._model_runner()
-        logits_batch = runner.next_token_logits_batch(
-            plan.input_token_ids,
-            pad_token_id=self._default_pad_token_id(),
-        )
+        with self._nvtx(_plan_nvtx_name("iteration.continuous", iteration, plan)):
+            self._emit_plan_batch(
+                batch_callback,
+                event="iteration_start",
+                iteration=iteration,
+                plan=plan,
+            )
+            runner = self._model_runner()
+            with self._nvtx(_plan_nvtx_name("model_forward.continuous", iteration, plan)):
+                logits_batch = runner.next_token_logits_batch(
+                    plan.input_token_ids,
+                    pad_token_id=self._default_pad_token_id(),
+                )
         for row, state in enumerate(states):
             if state.num_output_tokens == 0:
                 prefill_end_ns = time.monotonic_ns()
@@ -154,14 +158,15 @@ class Engine:
             token_time_ns = time.monotonic_ns()
             state.metrics.last_token_time_ns = token_time_ns
             if stream_callback is not None:
-                stream_callback(
-                    StreamEvent(
-                        request_id=state.request_id,
-                        token_id=next_token_id,
-                        token_index=state.num_output_tokens - 1,
-                        timestamp_ns=token_time_ns,
+                with self._nvtx("nano_serve.stream"):
+                    stream_callback(
+                        StreamEvent(
+                            request_id=state.request_id,
+                            token_id=next_token_id,
+                            token_index=state.num_output_tokens - 1,
+                            timestamp_ns=token_time_ns,
+                        )
                     )
-                )
 
             stop_token_ids = self._stop_token_ids(state.sampling_params)
             if next_token_id in stop_token_ids:
@@ -189,16 +194,17 @@ class Engine:
             return False
 
         scheduler = ChunkedPrefillScheduler()
-        plan = scheduler.schedule(
-            waiting=self.waiting,
-            running=self.running,
-            kv_cache=None,
-            budget=ScheduleBudget(
-                max_num_seqs=self.config.max_num_seqs,
-                max_num_batched_tokens=self.config.max_num_batched_tokens,
-                max_prefill_tokens=self.config.max_prefill_chunk_tokens,
-            ),
-        )
+        with self._nvtx("nano_serve.scheduler.chunked_prefill"):
+            plan = scheduler.schedule(
+                waiting=self.waiting,
+                running=self.running,
+                kv_cache=None,
+                budget=ScheduleBudget(
+                    max_num_seqs=self.config.max_num_seqs,
+                    max_num_batched_tokens=self.config.max_num_batched_tokens,
+                    max_prefill_tokens=self.config.max_prefill_chunk_tokens,
+                ),
+            )
         if not plan.request_ids:
             return False
 
@@ -217,37 +223,38 @@ class Engine:
             else:
                 state.status = RequestStatus.DECODE
 
-        self._emit_plan_batch(
-            batch_callback,
-            event="iteration_start",
-            iteration=iteration,
-            plan=plan,
-        )
-        runner = self._model_runner()
-        for state in states:
-            if state.is_terminal:
-                continue
-            chunk = prefill_chunks.get(state.request_id)
-            if chunk is not None:
-                self._run_prefill_chunk(
+        with self._nvtx(_plan_nvtx_name("iteration.chunked_prefill", iteration, plan)):
+            self._emit_plan_batch(
+                batch_callback,
+                event="iteration_start",
+                iteration=iteration,
+                plan=plan,
+            )
+            runner = self._model_runner()
+            for state in states:
+                if state.is_terminal:
+                    continue
+                chunk = prefill_chunks.get(state.request_id)
+                if chunk is not None:
+                    self._run_prefill_chunk(
+                        runner,
+                        state,
+                        chunk,
+                        stream_callback=stream_callback,
+                    )
+                    continue
+                self._run_decode_step(
                     runner,
                     state,
-                    chunk,
                     stream_callback=stream_callback,
                 )
-                continue
-            self._run_decode_step(
-                runner,
-                state,
-                stream_callback=stream_callback,
-            )
 
-        self._emit_plan_batch(
-            batch_callback,
-            event="iteration_end",
-            iteration=iteration,
-            plan=plan,
-        )
+            self._emit_plan_batch(
+                batch_callback,
+                event="iteration_end",
+                iteration=iteration,
+                plan=plan,
+            )
         return True
 
     def generate_continuous(
@@ -352,11 +359,18 @@ class Engine:
                     token_index=None,
                     num_tokens=len(state.prompt_token_ids),
                 )
-                prefill_output = runner.prefill(
-                    state.prompt_token_ids,
-                    request_id=state.request_id,
-                    max_decode_tokens=state.max_new_tokens,
-                )
+                with self._nvtx(
+                    _request_nvtx_name(
+                        "prefill.single",
+                        state,
+                        num_tokens=len(state.prompt_token_ids),
+                    )
+                ):
+                    prefill_output = runner.prefill(
+                        state.prompt_token_ids,
+                        request_id=state.request_id,
+                        max_decode_tokens=state.max_new_tokens,
+                    )
                 now_ns = time.monotonic_ns()
                 state.metrics.prefill_end_time_ns = now_ns
                 state.metrics.first_token_time_ns = now_ns
@@ -385,11 +399,19 @@ class Engine:
                     token_index=decode_index,
                     num_tokens=len(context_token_ids),
                 )
-                decode_output = runner.decode(
-                    context_token_ids,
-                    new_token_id=generated[-1],
-                    request_id=state.request_id,
-                )
+                with self._nvtx(
+                    _request_nvtx_name(
+                        "decode.single",
+                        state,
+                        token_index=decode_index,
+                        num_tokens=len(context_token_ids),
+                    )
+                ):
+                    decode_output = runner.decode(
+                        context_token_ids,
+                        new_token_id=generated[-1],
+                        request_id=state.request_id,
+                    )
                 decode_metadata = dict(getattr(decode_output, "metadata", {}))
                 state.block_table = _metadata_block_table(decode_metadata)
                 state.phase_metadata.append(decode_metadata)
@@ -410,14 +432,15 @@ class Engine:
             token_time_ns = time.monotonic_ns()
             state.metrics.last_token_time_ns = token_time_ns
             if stream_callback is not None:
-                stream_callback(
-                    StreamEvent(
-                        request_id=state.request_id,
-                        token_id=next_token_id,
-                        token_index=decode_index,
-                        timestamp_ns=token_time_ns,
+                with self._nvtx("nano_serve.stream"):
+                    stream_callback(
+                        StreamEvent(
+                            request_id=state.request_id,
+                            token_id=next_token_id,
+                            token_index=decode_index,
+                            timestamp_ns=token_time_ns,
+                        )
                     )
-                )
             if next_token_id in stop_token_ids:
                 state.stop_reason = "eos_token"
                 break
@@ -473,7 +496,18 @@ class Engine:
 
         self._emit_batch(batch_callback, event="prefill_start", iteration=0, states=states)
         prefill_contexts = [state.prompt_token_ids for state in states]
-        prefill_logits = runner.next_token_logits_batch(prefill_contexts, pad_token_id=pad_token_id)
+        with self._nvtx(
+            _batch_nvtx_name(
+                "prefill.static_batch",
+                iteration=0,
+                batch_size=len(states),
+                num_tokens=sum(len(context) for context in prefill_contexts),
+            )
+        ):
+            prefill_logits = runner.next_token_logits_batch(
+                prefill_contexts,
+                pad_token_id=pad_token_id,
+            )
         prefill_end_ns = time.monotonic_ns()
         for state in states:
             state.metrics.prefill_end_time_ns = prefill_end_ns
@@ -503,7 +537,18 @@ class Engine:
                     [*state.prompt_token_ids, *state.output_token_ids]
                     for state in states
                 ]
-                logits = runner.next_token_logits_batch(contexts, pad_token_id=pad_token_id)
+                with self._nvtx(
+                    _batch_nvtx_name(
+                        "decode.static_batch",
+                        iteration=decode_index,
+                        batch_size=len(contexts),
+                        num_tokens=sum(len(context) for context in contexts),
+                    )
+                ):
+                    logits = runner.next_token_logits_batch(
+                        contexts,
+                        pad_token_id=pad_token_id,
+                    )
                 self._emit_batch(
                     batch_callback,
                     event="decode_step_end",
@@ -523,14 +568,15 @@ class Engine:
                 token_time_ns = time.monotonic_ns()
                 state.metrics.last_token_time_ns = token_time_ns
                 if stream_callback is not None:
-                    stream_callback(
-                        StreamEvent(
-                            request_id=state.request_id,
-                            token_id=next_token_id,
-                            token_index=decode_index,
-                            timestamp_ns=token_time_ns,
+                    with self._nvtx("nano_serve.stream"):
+                        stream_callback(
+                            StreamEvent(
+                                request_id=state.request_id,
+                                token_id=next_token_id,
+                                token_index=decode_index,
+                                timestamp_ns=token_time_ns,
+                            )
                         )
-                    )
                 if next_token_id in stop_token_ids_by_request[state_index]:
                     self._finish_static_state(state, stop_reason="eos_token")
                 elif len(state.output_token_ids) >= state.max_new_tokens:
@@ -597,14 +643,21 @@ class Engine:
         chunk_start = chunk["start"]
         chunk_end = chunk["end"]
         final_chunk = chunk_end >= state.num_prompt_tokens
-        prefill_output = runner.prefill_chunk(
-            state.prompt_token_ids,
-            start=chunk_start,
-            end=chunk_end,
-            request_id=state.request_id,
-            max_decode_tokens=state.max_new_tokens,
-            final_chunk=final_chunk,
-        )
+        with self._nvtx(
+            _request_nvtx_name(
+                "prefill_chunk",
+                state,
+                num_tokens=chunk_end - chunk_start,
+            )
+        ):
+            prefill_output = runner.prefill_chunk(
+                state.prompt_token_ids,
+                start=chunk_start,
+                end=chunk_end,
+                request_id=state.request_id,
+                max_decode_tokens=state.max_new_tokens,
+                final_chunk=final_chunk,
+            )
         prefill_metadata = dict(getattr(prefill_output, "metadata", {}))
         state.block_table = _metadata_block_table(prefill_metadata)
         state.phase_metadata.append(prefill_metadata)
@@ -636,11 +689,19 @@ class Engine:
             raise RuntimeError("decode step requires at least one generated token")
         decode_index = state.num_output_tokens
         context_token_ids = [*state.prompt_token_ids, *state.output_token_ids]
-        decode_output = runner.decode(
-            context_token_ids,
-            new_token_id=state.output_token_ids[-1],
-            request_id=state.request_id,
-        )
+        with self._nvtx(
+            _request_nvtx_name(
+                "decode",
+                state,
+                token_index=decode_index,
+                num_tokens=len(context_token_ids),
+            )
+        ):
+            decode_output = runner.decode(
+                context_token_ids,
+                new_token_id=state.output_token_ids[-1],
+                request_id=state.request_id,
+            )
         decode_metadata = dict(getattr(decode_output, "metadata", {}))
         state.block_table = _metadata_block_table(decode_metadata)
         state.phase_metadata.append(decode_metadata)
@@ -668,14 +729,15 @@ class Engine:
             state.metrics.prefill_end_time_ns = token_time_ns
         state.metrics.last_token_time_ns = token_time_ns
         if stream_callback is not None:
-            stream_callback(
-                StreamEvent(
-                    request_id=state.request_id,
-                    token_id=token_id,
-                    token_index=token_index,
-                    timestamp_ns=token_time_ns,
+            with self._nvtx("nano_serve.stream"):
+                stream_callback(
+                    StreamEvent(
+                        request_id=state.request_id,
+                        token_id=token_id,
+                        token_index=token_index,
+                        timestamp_ns=token_time_ns,
+                    )
                 )
-            )
         stop_token_ids = self._stop_token_ids(state.sampling_params)
         if token_id in stop_token_ids:
             self._finish_continuous_state(state, stop_reason="eos_token")
@@ -765,9 +827,10 @@ class Engine:
         )
 
     def _sample(self, logits: Any, params: SamplingParams) -> int:
-        if params.top_k is None and params.top_p is None and params.temperature == 1.0:
-            return self.greedy_sampler.sample(logits, params)
-        return self.topk_topp_sampler.sample(logits, params)
+        with self._nvtx("nano_serve.sample"):
+            if params.top_k is None and params.top_p is None and params.temperature == 1.0:
+                return self.greedy_sampler.sample(logits, params)
+            return self.topk_topp_sampler.sample(logits, params)
 
     def _model_runner(self):
         if self.model_runner is None:
@@ -777,12 +840,16 @@ class Engine:
             from nano_serve.model.loader import ModelSpec
             from nano_serve.model.torch_runner import TorchModelRunner
 
-            self.model_runner = TorchModelRunner.from_model_spec(
-                ModelSpec(model_path=Path(self.config.model_path), dtype="bfloat16"),
-                kv_cache=self.config.kv_cache,
-                block_size=self.config.block_size,
-            )
+            with self._nvtx("nano_serve.model_runner.init"):
+                self.model_runner = TorchModelRunner.from_model_spec(
+                    ModelSpec(model_path=Path(self.config.model_path), dtype="bfloat16"),
+                    kv_cache=self.config.kv_cache,
+                    block_size=self.config.block_size,
+                )
         return self.model_runner
+
+    def _nvtx(self, name: str):
+        return nvtx_range(name, enabled=self.config.benchmark.enable_nvtx)
 
     def _default_stop_token_ids(self) -> set[int]:
         model = getattr(self._model_runner(), "model", None)
@@ -813,6 +880,43 @@ def _metadata_block_table(metadata: dict[str, object]) -> list[int]:
     if not isinstance(blocks, int) or blocks <= 0:
         return []
     return list(range(blocks))
+
+
+def _plan_nvtx_name(stage: str, iteration: int, plan: BatchPlan) -> str:
+    kind = plan.kind.value if isinstance(plan.kind, BatchKind) else str(plan.kind)
+    return (
+        f"nano_serve.{stage}:iteration={iteration},kind={kind},"
+        f"batch={plan.batch_size},prefill_tokens={plan.num_prefill_tokens},"
+        f"decode_tokens={plan.num_decode_tokens}"
+    )
+
+
+def _request_nvtx_name(
+    stage: str,
+    state: RequestState,
+    *,
+    token_index: int | None = None,
+    num_tokens: int | None = None,
+) -> str:
+    parts = [f"nano_serve.{stage}", f"request={state.request_id}"]
+    if token_index is not None:
+        parts.append(f"token_index={token_index}")
+    if num_tokens is not None:
+        parts.append(f"tokens={num_tokens}")
+    return ":".join(parts)
+
+
+def _batch_nvtx_name(
+    stage: str,
+    *,
+    iteration: int,
+    batch_size: int,
+    num_tokens: int,
+) -> str:
+    return (
+        f"nano_serve.{stage}:iteration={iteration},batch={batch_size},"
+        f"tokens={num_tokens}"
+    )
 
 
 def _static_batch_metadata(states: list[RequestState]) -> dict[str, object]:

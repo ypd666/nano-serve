@@ -31,3 +31,5 @@ data/
 *.onnx
 *.arrow
 *.parquet
+data/
+.env

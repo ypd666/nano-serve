@@ -13,8 +13,9 @@ from typing import Any
 
 from nano_serve.attention import TorchGatherPagedAttention
 from nano_serve.benchmark.phase6 import _pack_contiguous
+from nano_serve.benchmark.profiler import nvtx_label, nvtx_range
 from nano_serve.benchmark.report import write_markdown_report
-from nano_serve.engine.config import EngineConfig
+from nano_serve.engine.config import BenchmarkConfig, EngineConfig
 from nano_serve.kernels import torch_ops
 from nano_serve.kernels.tilelang import (
     check_tilelang_available,
@@ -45,6 +46,7 @@ class Phase7KernelBenchmarkConfig:
     seed: int = 0
     require_tilelang: bool = False
     enable_ncu: bool = False
+    enable_nvtx: bool = False
 
 
 def run_phase7_kernel_benchmark(config: Phase7KernelBenchmarkConfig) -> dict[str, object]:
@@ -67,6 +69,7 @@ def run_phase7_kernel_benchmark(config: Phase7KernelBenchmarkConfig) -> dict[str
         kv_cache="paged",
         attention_backend="tile_paged",
         block_size=config.block_size,
+        benchmark=BenchmarkConfig(enable_nvtx=config.enable_nvtx),
     )
     run_config = {
         "run_id": run_id,
@@ -85,6 +88,7 @@ def run_phase7_kernel_benchmark(config: Phase7KernelBenchmarkConfig) -> dict[str
         "seed": config.seed,
         "require_tilelang": config.require_tilelang,
         "enable_ncu": config.enable_ncu,
+        "enable_nvtx": config.enable_nvtx,
         "device": str(device),
         "dtype": str(dtype),
         "engine_config": engine_config.to_dict(),
@@ -97,7 +101,10 @@ def run_phase7_kernel_benchmark(config: Phase7KernelBenchmarkConfig) -> dict[str
 
     cases: list[dict[str, object]] = []
     start_ns = time.monotonic_ns()
-    with JSONLEventWriter(events_path) as writer:
+    with (
+        JSONLEventWriter(events_path) as writer,
+        nvtx_range(nvtx_label("phase7", "run"), enabled=config.enable_nvtx),
+    ):
         writer.write(Event("run_start", fields={"run_id": run_id, "phase": "phase7"}))
         writer.write(platform_event(platform_info))
         writer.write(Event("tilelang_availability", fields=availability.to_dict()))
@@ -130,15 +137,21 @@ def run_phase7_kernel_benchmark(config: Phase7KernelBenchmarkConfig) -> dict[str
             writer.write(Event("run_end", fields=summary))
         else:
             generator = torch.Generator(device=device).manual_seed(config.seed)
-            cases.extend(
-                [
-                    _rmsnorm_case(config, generator=generator, device=device, dtype=dtype),
-                    _rope_case(config, generator=generator, device=device, dtype=dtype),
-                    _silu_mul_case(config, generator=generator, device=device, dtype=dtype),
-                    _sampling_case(config, generator=generator, device=device, dtype=dtype),
-                    _paged_attention_case(config, generator=generator, device=device, dtype=dtype),
-                ]
+            case_runners = (
+                ("rmsnorm", _rmsnorm_case),
+                ("rope", _rope_case),
+                ("silu_mul", _silu_mul_case),
+                ("sampling", _sampling_case),
+                ("paged_attention", _paged_attention_case),
             )
+            for case_name, run_case in case_runners:
+                with nvtx_range(
+                    nvtx_label("phase7", "case", case=case_name),
+                    enabled=config.enable_nvtx,
+                ):
+                    cases.append(
+                        run_case(config, generator=generator, device=device, dtype=dtype)
+                    )
             for case in cases:
                 writer.write(Event("tilelang_kernel_case", fields=case))
             end_ns = time.monotonic_ns()
@@ -179,14 +192,14 @@ def _rmsnorm_case(config: Phase7KernelBenchmarkConfig, *, generator: Any, device
     )
     weight = torch.randn((config.hidden_size,), generator=generator, device=device, dtype=dtype)
     expected = torch_ops.rmsnorm(x, weight, eps=1e-6)
-    use_tilelang = check_tilelang_available().available
+    require_tilelang = config.require_tilelang
     actual, latency_ms = _time_repeated(
-        lambda: tile_rmsnorm(x, weight, eps=1e-6, require_tilelang=use_tilelang),
+        lambda: tile_rmsnorm(x, weight, eps=1e-6, require_tilelang=require_tilelang),
         repeats=config.repeats,
         device=device,
     )
     result = _case_result("rmsnorm", expected, actual, latency_ms, config)
-    result["backend"] = "tilelang" if use_tilelang else "torch_fallback"
+    result["backend"] = _backend_label(require_tilelang=require_tilelang)
     return result
 
 
@@ -215,9 +228,9 @@ def _rope_case(config: Phase7KernelBenchmarkConfig, *, generator: Any, device: A
     cos = emb.cos().to(dtype=dtype).unsqueeze(0)
     sin = emb.sin().to(dtype=dtype).unsqueeze(0)
     expected_q, expected_k = torch_ops.rope(q, k, cos, sin)
-    use_tilelang = check_tilelang_available().available
+    require_tilelang = config.require_tilelang
     actual, latency_ms = _time_repeated(
-        lambda: tile_rope(q, k, cos, sin, require_tilelang=use_tilelang),
+        lambda: tile_rope(q, k, cos, sin, require_tilelang=require_tilelang),
         repeats=config.repeats,
         device=device,
     )
@@ -225,7 +238,7 @@ def _rope_case(config: Phase7KernelBenchmarkConfig, *, generator: Any, device: A
     max_abs_diff = max(_max_abs_diff(expected_q, actual_q), _max_abs_diff(expected_k, actual_k))
     return {
         **_base_case("rope", latency_ms, config),
-        "backend": "tilelang" if use_tilelang else "torch_fallback",
+        "backend": _backend_label(require_tilelang=require_tilelang),
         "max_abs_diff": max_abs_diff,
     }
 
@@ -241,14 +254,14 @@ def _silu_mul_case(config: Phase7KernelBenchmarkConfig, *, generator: Any, devic
     )
     up = torch.randn(gate.shape, generator=generator, device=device, dtype=dtype)
     expected = torch_ops.silu_mul(gate, up)
-    use_tilelang = check_tilelang_available().available
+    require_tilelang = config.require_tilelang
     actual, latency_ms = _time_repeated(
-        lambda: tile_silu_mul(gate, up, require_tilelang=use_tilelang),
+        lambda: tile_silu_mul(gate, up, require_tilelang=require_tilelang),
         repeats=config.repeats,
         device=device,
     )
     result = _case_result("silu_mul", expected, actual, latency_ms, config)
-    result["backend"] = "tilelang" if use_tilelang else "torch_fallback"
+    result["backend"] = _backend_label(require_tilelang=require_tilelang)
     return result
 
 
@@ -264,14 +277,19 @@ def _sampling_case(
     logits = torch.randn((config.hidden_size,), generator=generator, device=device, dtype=dtype)
     top_k = min(32, config.hidden_size)
     expected = torch_ops.top_k_top_p_filter(logits, top_k=top_k, top_p=None)
-    use_tilelang = check_tilelang_available().available
+    require_tilelang = config.require_tilelang
     actual, latency_ms = _time_repeated(
-        lambda: tile_sample(logits, top_k=top_k, top_p=None, require_tilelang=use_tilelang),
+        lambda: tile_sample(
+            logits,
+            top_k=top_k,
+            top_p=None,
+            require_tilelang=require_tilelang,
+        ),
         repeats=config.repeats,
         device=device,
     )
     result = _case_result("sampling_filter", expected, actual, latency_ms, config)
-    result["backend"] = "tilelang" if use_tilelang else "torch_fallback"
+    result["backend"] = _backend_label(require_tilelang=require_tilelang)
     result["top_k"] = top_k
     result["top_p"] = None
     return result
@@ -472,6 +490,10 @@ def _base_case(
         "kv_heads": config.kv_heads,
         "head_dim": config.head_dim,
     }
+
+
+def _backend_label(*, require_tilelang: bool) -> str:
+    return "tilelang_required" if require_tilelang else "tilelang_or_torch_fallback"
 
 
 def _max_abs_diff(expected: Any, actual: Any) -> float:

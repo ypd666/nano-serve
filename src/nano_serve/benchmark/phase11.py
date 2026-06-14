@@ -10,8 +10,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from nano_serve.benchmark.profiler import nvtx_label, nvtx_range
 from nano_serve.benchmark.report import write_markdown_report
-from nano_serve.engine.config import EngineConfig
+from nano_serve.engine.config import BenchmarkConfig, EngineConfig
 from nano_serve.observability import Event, JSONLEventWriter, platform_event
 from nano_serve.platform import detect_platform
 from nano_serve.speculative import (
@@ -32,6 +33,7 @@ class Phase11SpeculativeBenchmarkConfig:
     prompt_tokens: int = 16
     target_step_time_ms: float = 1.0
     draft_token_time_ms: float = 0.1
+    enable_nvtx: bool = False
 
 
 def run_phase11_speculative_benchmark(
@@ -46,7 +48,10 @@ def run_phase11_speculative_benchmark(
     run_config_path = run_dir / "run_config.json"
     summary_path = run_dir / "summary.json"
     report_path = run_dir / "report.md"
-    engine_config = EngineConfig(spec_decode="draft_model")
+    engine_config = EngineConfig(
+        spec_decode="draft_model",
+        benchmark=BenchmarkConfig(enable_nvtx=config.enable_nvtx),
+    )
     run_config = {
         "run_id": run_id,
         "phase": "phase11",
@@ -58,6 +63,7 @@ def run_phase11_speculative_benchmark(
         "prompt_tokens": config.prompt_tokens,
         "target_step_time_ms": config.target_step_time_ms,
         "draft_token_time_ms": config.draft_token_time_ms,
+        "enable_nvtx": config.enable_nvtx,
         "engine_config": engine_config.to_dict(),
         "platform": platform_info.to_dict(),
     }
@@ -65,12 +71,19 @@ def run_phase11_speculative_benchmark(
 
     cases: list[dict[str, object]] = []
     start_ns = time.monotonic_ns()
-    with JSONLEventWriter(events_path) as writer:
+    with (
+        JSONLEventWriter(events_path) as writer,
+        nvtx_range(nvtx_label("phase11", "run"), enabled=config.enable_nvtx),
+    ):
         writer.write(Event("run_start", fields={"run_id": run_id, "phase": "phase11"}))
         writer.write(platform_event(platform_info))
         for workload in ("friendly", "hostile"):
             for gamma in config.gamma_values:
-                case = _run_case(config, workload=workload, gamma=gamma, writer=writer)
+                with nvtx_range(
+                    nvtx_label("phase11", "case", gamma=gamma, workload=workload),
+                    enabled=config.enable_nvtx,
+                ):
+                    case = _run_case(config, workload=workload, gamma=gamma, writer=writer)
                 cases.append(case)
                 writer.write(Event("speculative_case", fields=case))
         end_ns = time.monotonic_ns()

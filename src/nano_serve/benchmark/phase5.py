@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from nano_serve.benchmark.profiler import nvtx_label, nvtx_range
 from nano_serve.benchmark.report import write_markdown_report
 from nano_serve.kv_cache.paged import PagedKVCache
 from nano_serve.observability import Event, JSONLEventWriter, platform_event
@@ -26,6 +27,7 @@ class Phase5KVBenchmarkConfig:
     max_prefill_tokens: int = 128
     max_decode_tokens: int = 64
     seed: int = 0
+    enable_nvtx: bool = False
 
 
 def run_phase5_kv_benchmark(config: Phase5KVBenchmarkConfig) -> dict[str, object]:
@@ -50,6 +52,7 @@ def run_phase5_kv_benchmark(config: Phase5KVBenchmarkConfig) -> dict[str, object
         "max_prefill_tokens": config.max_prefill_tokens,
         "max_decode_tokens": config.max_decode_tokens,
         "seed": config.seed,
+        "enable_nvtx": config.enable_nvtx,
         "platform": platform_info.to_dict(),
     }
     run_config_path.write_text(json.dumps(run_config, indent=2, sort_keys=True), encoding="utf-8")
@@ -70,27 +73,39 @@ def run_phase5_kv_benchmark(config: Phase5KVBenchmarkConfig) -> dict[str, object
     decode_failures = 0
     allocated_requests: list[str] = []
 
-    with JSONLEventWriter(events_path) as writer:
+    with (
+        JSONLEventWriter(events_path) as writer,
+        nvtx_range(nvtx_label("phase5", "run"), enabled=config.enable_nvtx),
+    ):
         writer.write(Event("run_start", fields={"run_id": run_id, "phase": "phase5"}))
         writer.write(platform_event(platform_info))
 
         for request_id in request_ids:
-            try:
-                handle = cache.allocate_prefill(request_id, prefill_tokens[request_id])
-            except MemoryError as exc:
-                allocation_failures += 1
-                writer.write(
-                    Event(
-                        "paged_kv_oom",
-                        fields={
-                            "request_id": request_id,
-                            "phase": "prefill",
-                            "message": str(exc),
-                            **cache.stats().to_dict(),
-                        },
+            with nvtx_range(
+                nvtx_label(
+                    "phase5",
+                    "prefill",
+                    request_id=request_id,
+                    tokens=prefill_tokens[request_id],
+                ),
+                enabled=config.enable_nvtx,
+            ):
+                try:
+                    handle = cache.allocate_prefill(request_id, prefill_tokens[request_id])
+                except MemoryError as exc:
+                    allocation_failures += 1
+                    writer.write(
+                        Event(
+                            "paged_kv_oom",
+                            fields={
+                                "request_id": request_id,
+                                "phase": "prefill",
+                                "message": str(exc),
+                                **cache.stats().to_dict(),
+                            },
+                        )
                     )
-                )
-                continue
+                    continue
             allocated_requests.append(request_id)
             writer.write(
                 Event(
@@ -104,39 +119,52 @@ def run_phase5_kv_benchmark(config: Phase5KVBenchmarkConfig) -> dict[str, object
                 )
             )
 
-            for _ in range(decode_tokens[request_id]):
-                try:
-                    handle = cache.allocate_decode_slot(request_id)
-                except MemoryError as exc:
-                    decode_failures += 1
-                    writer.write(
-                        Event(
-                            "paged_kv_oom",
-                            fields={
-                                "request_id": request_id,
-                                "phase": "decode",
-                                "message": str(exc),
-                                **cache.stats().to_dict(),
-                            },
+            with nvtx_range(
+                nvtx_label(
+                    "phase5",
+                    "decode",
+                    request_id=request_id,
+                    tokens=decode_tokens[request_id],
+                ),
+                enabled=config.enable_nvtx,
+            ):
+                for _ in range(decode_tokens[request_id]):
+                    try:
+                        handle = cache.allocate_decode_slot(request_id)
+                    except MemoryError as exc:
+                        decode_failures += 1
+                        writer.write(
+                            Event(
+                                "paged_kv_oom",
+                                fields={
+                                    "request_id": request_id,
+                                    "phase": "decode",
+                                    "message": str(exc),
+                                    **cache.stats().to_dict(),
+                                },
+                            )
                         )
+                        break
+                writer.write(
+                    Event(
+                        "paged_kv_decode_end",
+                        fields={
+                            "request_id": request_id,
+                            "target_decode_tokens": decode_tokens[request_id],
+                            "sequence_length": handle.num_tokens,
+                            "block_ids": handle.block_ids,
+                            **cache.stats().to_dict(),
+                        },
                     )
-                    break
-            writer.write(
-                Event(
-                    "paged_kv_decode_end",
-                    fields={
-                        "request_id": request_id,
-                        "target_decode_tokens": decode_tokens[request_id],
-                        "sequence_length": handle.num_tokens,
-                        "block_ids": handle.block_ids,
-                        **cache.stats().to_dict(),
-                    },
                 )
-            )
 
         peak_stats = cache.stats()
         for request_id in allocated_requests[::2]:
-            cache.free(request_id)
+            with nvtx_range(
+                nvtx_label("phase5", "free", request_id=request_id),
+                enabled=config.enable_nvtx,
+            ):
+                cache.free(request_id)
             writer.write(
                 Event(
                     "paged_kv_free",

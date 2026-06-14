@@ -19,8 +19,9 @@ from nano_serve.advanced import (
     StructuredLogitsProcessor,
     WeightQuantizer,
 )
+from nano_serve.benchmark.profiler import nvtx_label, nvtx_range
 from nano_serve.benchmark.report import write_markdown_report
-from nano_serve.engine.config import AdvancedFeatureConfig, EngineConfig
+from nano_serve.engine.config import AdvancedFeatureConfig, BenchmarkConfig, EngineConfig
 from nano_serve.observability import Event, JSONLEventWriter, platform_event
 from nano_serve.platform import detect_platform
 
@@ -33,6 +34,7 @@ class Phase12AdvancedBenchmarkConfig:
     tokens: int = 1024
     batch_size: int = 8
     seed: int = 0
+    enable_nvtx: bool = False
 
 
 def run_phase12_advanced_benchmark(
@@ -58,6 +60,7 @@ def run_phase12_advanced_benchmark(
             lora=True,
             structured_output="json_object",
         ),
+        benchmark=BenchmarkConfig(enable_nvtx=config.enable_nvtx),
     )
     run_config = {
         "run_id": run_id,
@@ -69,18 +72,34 @@ def run_phase12_advanced_benchmark(
         "tokens": config.tokens,
         "batch_size": config.batch_size,
         "seed": config.seed,
+        "enable_nvtx": config.enable_nvtx,
         "engine_config": engine_config.to_dict(),
         "platform": platform_info.to_dict(),
     }
     run_config_path.write_text(json.dumps(run_config, indent=2, sort_keys=True), encoding="utf-8")
 
     start_ns = time.monotonic_ns()
-    with JSONLEventWriter(events_path) as writer:
+    with (
+        JSONLEventWriter(events_path) as writer,
+        nvtx_range(nvtx_label("phase12", "run"), enabled=config.enable_nvtx),
+    ):
         writer.write(Event("run_start", fields={"run_id": run_id, "phase": "phase12"}))
         writer.write(platform_event(platform_info))
-        quant_cases = _run_quant_cases(config, writer)
-        lora_case = _run_lora_case(config, writer)
-        structured_case = _run_structured_case(config, writer)
+        with nvtx_range(
+            nvtx_label("phase12", "case", case="quantization"),
+            enabled=config.enable_nvtx,
+        ):
+            quant_cases = _run_quant_cases(config, writer)
+        with nvtx_range(
+            nvtx_label("phase12", "case", case="lora"),
+            enabled=config.enable_nvtx,
+        ):
+            lora_case = _run_lora_case(config, writer)
+        with nvtx_range(
+            nvtx_label("phase12", "case", case="structured_output"),
+            enabled=config.enable_nvtx,
+        ):
+            structured_case = _run_structured_case(config, writer)
         end_ns = time.monotonic_ns()
         summary = {
             "run_id": run_id,
@@ -125,10 +144,14 @@ def _run_quant_cases(
     cases: list[dict[str, object]] = []
     for dtype in ("int8", "int4"):
         quantizer = WeightQuantizer(dtype=dtype, axis=1)
-        start_ns = time.monotonic_ns()
-        quantized = quantizer.quantize(weight)
-        restored = quantizer.dequantize(quantized)
-        end_ns = time.monotonic_ns()
+        with nvtx_range(
+            nvtx_label("phase12", "quant_weight", dtype=dtype),
+            enabled=config.enable_nvtx,
+        ):
+            start_ns = time.monotonic_ns()
+            quantized = quantizer.quantize(weight)
+            restored = quantizer.dequantize(quantized)
+            end_ns = time.monotonic_ns()
         diff = (restored - weight).abs()
         case = {
             "case": f"weight_only_{dtype}",
@@ -145,10 +168,14 @@ def _run_quant_cases(
     kv_dtypes: tuple[Literal["int8", "fp8"], ...] = ("int8", "fp8")
     for dtype in kv_dtypes:
         kv_quantizer = KVQuantizer(dtype=dtype)
-        start_ns = time.monotonic_ns()
-        quantized_kv = kv_quantizer.quantize(kv)
-        restored_kv = kv_quantizer.dequantize(quantized_kv)
-        end_ns = time.monotonic_ns()
+        with nvtx_range(
+            nvtx_label("phase12", "quant_kv", dtype=dtype),
+            enabled=config.enable_nvtx,
+        ):
+            start_ns = time.monotonic_ns()
+            quantized_kv = kv_quantizer.quantize(kv)
+            restored_kv = kv_quantizer.dequantize(quantized_kv)
+            end_ns = time.monotonic_ns()
         kv_diff = (restored_kv - kv).abs()
         kv_case = {
             "case": f"kv_{dtype}",

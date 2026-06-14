@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from nano_serve.attention import TorchGatherPagedAttention
+from nano_serve.benchmark.profiler import nvtx_label, nvtx_range
 from nano_serve.benchmark.report import write_markdown_report
 from nano_serve.engine.config import EngineConfig
 from nano_serve.observability import Event, JSONLEventWriter, platform_event
@@ -29,6 +30,7 @@ class Phase6PagedAttentionBenchmarkConfig:
     block_sizes: tuple[int, ...] = (8, 16, 32)
     repeats: int = 5
     seed: int = 0
+    enable_nvtx: bool = False
 
 
 def run_phase6_paged_attention_benchmark(
@@ -66,6 +68,7 @@ def run_phase6_paged_attention_benchmark(
         "block_sizes": list(config.block_sizes),
         "repeats": config.repeats,
         "seed": config.seed,
+        "enable_nvtx": config.enable_nvtx,
         "device": str(device),
         "dtype": str(dtype),
         "engine_config": engine_config.to_dict(),
@@ -76,24 +79,37 @@ def run_phase6_paged_attention_benchmark(
     attention = TorchGatherPagedAttention()
     results: list[dict[str, object]] = []
     start_ns = time.monotonic_ns()
-    with JSONLEventWriter(events_path) as writer:
+    with (
+        JSONLEventWriter(events_path) as writer,
+        nvtx_range(nvtx_label("phase6", "run"), enabled=config.enable_nvtx),
+    ):
         writer.write(Event("run_start", fields={"run_id": run_id, "phase": "phase6"}))
         writer.write(platform_event(platform_info))
         for context_len in config.context_lens:
             for block_size in config.block_sizes:
-                case = _run_case(
-                    attention,
-                    batch_size=config.batch_size,
-                    query_heads=config.query_heads,
-                    kv_heads=config.kv_heads,
-                    head_dim=config.head_dim,
-                    context_len=context_len,
-                    block_size=block_size,
-                    repeats=config.repeats,
-                    seed=config.seed,
-                    device=device,
-                    dtype=dtype,
-                )
+                with nvtx_range(
+                    nvtx_label(
+                        "phase6",
+                        "case",
+                        block_size=block_size,
+                        context_len=context_len,
+                    ),
+                    enabled=config.enable_nvtx,
+                ):
+                    case = _run_case(
+                        attention,
+                        batch_size=config.batch_size,
+                        query_heads=config.query_heads,
+                        kv_heads=config.kv_heads,
+                        head_dim=config.head_dim,
+                        context_len=context_len,
+                        block_size=block_size,
+                        repeats=config.repeats,
+                        seed=config.seed,
+                        device=device,
+                        dtype=dtype,
+                        enable_nvtx=config.enable_nvtx,
+                    )
                 results.append(case)
                 writer.write(Event("paged_attention_case", fields=case))
         end_ns = time.monotonic_ns()
@@ -151,6 +167,7 @@ def _run_case(
     seed: int,
     device,
     dtype,
+    enable_nvtx: bool,
 ) -> dict[str, object]:
     import torch
 
@@ -191,23 +208,31 @@ def _run_case(
     actual = None
     for _ in range(repeats):
         gather_start_ns = time.monotonic_ns()
-        gathered_key, gathered_value = attention.gather_kv(
-            paged_key,
-            paged_value,
-            block_tables,
-            seq_lens=[context_len] * batch_size,
-        )
+        with nvtx_range(
+            nvtx_label("phase6", "gather", block_size=block_size, context_len=context_len),
+            enabled=enable_nvtx,
+        ):
+            gathered_key, gathered_value = attention.gather_kv(
+                paged_key,
+                paged_value,
+                block_tables,
+                seq_lens=[context_len] * batch_size,
+            )
         if device.type == "cuda":
             torch.cuda.synchronize()
         gather_times.append((time.monotonic_ns() - gather_start_ns) / 1_000_000)
 
         attention_start_ns = time.monotonic_ns()
-        actual, _ = attention.forward_prefill(
-            query,
-            gathered_key,
-            gathered_value,
-            causal=False,
-        )
+        with nvtx_range(
+            nvtx_label("phase6", "attention", block_size=block_size, context_len=context_len),
+            enabled=enable_nvtx,
+        ):
+            actual, _ = attention.forward_prefill(
+                query,
+                gathered_key,
+                gathered_value,
+                causal=False,
+            )
         if device.type == "cuda":
             torch.cuda.synchronize()
         attention_times.append((time.monotonic_ns() - attention_start_ns) / 1_000_000)

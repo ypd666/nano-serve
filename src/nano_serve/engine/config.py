@@ -43,7 +43,7 @@ class ParallelConfig:
 
 @dataclass(frozen=True)
 class BenchmarkConfig:
-    enable_nvtx: bool = True
+    enable_nvtx: bool = False
     enable_ncu: bool = False
     log_iteration_trace: bool = True
 

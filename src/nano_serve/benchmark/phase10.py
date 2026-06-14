@@ -11,8 +11,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from nano_serve.benchmark.profiler import nvtx_label, nvtx_range
 from nano_serve.benchmark.report import write_markdown_report
-from nano_serve.engine.config import EngineConfig
+from nano_serve.engine.config import BenchmarkConfig, EngineConfig
 from nano_serve.observability import Event, JSONLEventWriter, platform_event
 from nano_serve.platform import detect_platform
 from nano_serve.runtime import (
@@ -36,6 +37,7 @@ class Phase10OverlapGraphBenchmarkConfig:
     enable_torch_compile: bool = True
     enable_cuda_graph: bool = True
     seed: int = 0
+    enable_nvtx: bool = False
 
 
 class _WhitespaceTokenizer:
@@ -61,7 +63,10 @@ def run_phase10_overlap_graph_benchmark(
     nsys_path = run_dir / "nsys_profile_command.txt"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.float16 if device.type == "cuda" else torch.float32
-    engine_config = EngineConfig(graph="none")
+    engine_config = EngineConfig(
+        graph="none",
+        benchmark=BenchmarkConfig(enable_nvtx=config.enable_nvtx),
+    )
     run_config = {
         "run_id": run_id,
         "phase": "phase10",
@@ -75,6 +80,7 @@ def run_phase10_overlap_graph_benchmark(
         "enable_torch_compile": config.enable_torch_compile,
         "enable_cuda_graph": config.enable_cuda_graph,
         "seed": config.seed,
+        "enable_nvtx": config.enable_nvtx,
         "device": str(device),
         "dtype": str(dtype),
         "engine_config": engine_config.to_dict(),
@@ -85,10 +91,17 @@ def run_phase10_overlap_graph_benchmark(
 
     cases: list[dict[str, object]] = []
     start_ns = time.monotonic_ns()
-    with JSONLEventWriter(events_path) as writer:
+    with (
+        JSONLEventWriter(events_path) as writer,
+        nvtx_range(nvtx_label("phase10", "run"), enabled=config.enable_nvtx),
+    ):
         writer.write(Event("run_start", fields={"run_id": run_id, "phase": "phase10"}))
         writer.write(platform_event(platform_info))
-        _run_cpu_overlap_primitives(config, writer=writer)
+        with nvtx_range(
+            nvtx_label("phase10", "cpu_overlap_primitives"),
+            enabled=config.enable_nvtx,
+        ):
+            _run_cpu_overlap_primitives(config, writer=writer)
         selector = ShapeBucketSelector(
             [
                 ShapeBucket(batch_size=batch_size, seq_len=seq_len)
@@ -110,33 +123,26 @@ def run_phase10_overlap_graph_benchmark(
             device=device,
             dtype=dtype,
         )
-        cases.append(
-            _run_eager_case(
-                model,
-                inputs,
-                config=config,
-                device=device,
-                selection=selection.to_dict(),
-            )
+        selection_dict = selection.to_dict()
+        case_runners = (
+            ("eager", _run_eager_case),
+            ("torch_compile", _run_torch_compile_case),
+            ("cuda_graph", _run_cuda_graph_case),
         )
-        cases.append(
-            _run_torch_compile_case(
-                model,
-                inputs,
-                config=config,
-                device=device,
-                selection=selection.to_dict(),
-            )
-        )
-        cases.append(
-            _run_cuda_graph_case(
-                model,
-                inputs,
-                config=config,
-                device=device,
-                selection=selection.to_dict(),
-            )
-        )
+        for case_name, run_case in case_runners:
+            with nvtx_range(
+                nvtx_label("phase10", "case", case=case_name),
+                enabled=config.enable_nvtx,
+            ):
+                cases.append(
+                    run_case(
+                        model,
+                        inputs,
+                        config=config,
+                        device=device,
+                        selection=selection_dict,
+                    )
+                )
         for case in cases:
             writer.write(Event("phase10_graph_case", fields=case))
         end_ns = time.monotonic_ns()
@@ -374,13 +380,16 @@ def _skipped_case(
 
 
 def _nsys_command(config: Phase10OverlapGraphBenchmarkConfig) -> str:
-    return (
+    command = (
         "nsys profile --trace=cuda,nvtx,osrt --stats=true "
-        "python -m nano_serve.cli phase10-overlap-graphs "
+        "python3 main.py phase10-overlap-graphs "
         f"--batch-size {config.batch_size} "
         f"--hidden-size {config.hidden_size} "
         f"--decode-steps {config.decode_steps}"
     )
+    if config.enable_nvtx:
+        command += " --enable-nvtx"
+    return command
 
 
 def _float_metric(case: dict[str, object], name: str) -> float:

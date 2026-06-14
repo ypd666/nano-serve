@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from nano_serve.benchmark.profiler import nvtx_label, nvtx_range
 from nano_serve.benchmark.report import write_markdown_report
 from nano_serve.distributed import (
     DataParallelRouter,
@@ -19,7 +20,7 @@ from nano_serve.distributed import (
     Worker,
     WorkerInfo,
 )
-from nano_serve.engine.config import EngineConfig, ParallelConfig
+from nano_serve.engine.config import BenchmarkConfig, EngineConfig, ParallelConfig
 from nano_serve.observability import Event, JSONLEventWriter, platform_event
 from nano_serve.platform import detect_platform
 
@@ -33,6 +34,7 @@ class Phase13DistributedBenchmarkConfig:
     microbatches: int = 4
     num_experts: int = 8
     seed: int = 0
+    enable_nvtx: bool = False
 
 
 def run_phase13_distributed_benchmark(
@@ -58,6 +60,7 @@ def run_phase13_distributed_benchmark(
             dp_size=config.world_size,
             ep_size=config.world_size,
         ),
+        benchmark=BenchmarkConfig(enable_nvtx=config.enable_nvtx),
     )
     run_config = {
         "run_id": run_id,
@@ -70,20 +73,44 @@ def run_phase13_distributed_benchmark(
         "microbatches": config.microbatches,
         "num_experts": config.num_experts,
         "seed": config.seed,
+        "enable_nvtx": config.enable_nvtx,
         "engine_config": engine_config.to_dict(),
         "platform": platform_info.to_dict(),
     }
     run_config_path.write_text(json.dumps(run_config, indent=2, sort_keys=True), encoding="utf-8")
 
     start_ns = time.monotonic_ns()
-    with JSONLEventWriter(events_path) as writer:
+    with (
+        JSONLEventWriter(events_path) as writer,
+        nvtx_range(nvtx_label("phase13", "run"), enabled=config.enable_nvtx),
+    ):
         writer.write(Event("run_start", fields={"run_id": run_id, "phase": "phase13"}))
         writer.write(platform_event(platform_info))
-        worker_case = _run_worker_case(config, writer)
-        dp_case = _run_dp_case(config, writer)
-        tp_case = _run_tp_case(config, writer)
-        pp_case = _run_pp_case(config, writer)
-        ep_case = _run_ep_case(config, writer)
+        with nvtx_range(
+            nvtx_label("phase13", "case", case="worker"),
+            enabled=config.enable_nvtx,
+        ):
+            worker_case = _run_worker_case(config, writer)
+        with nvtx_range(
+            nvtx_label("phase13", "case", case="dp"),
+            enabled=config.enable_nvtx,
+        ):
+            dp_case = _run_dp_case(config, writer)
+        with nvtx_range(
+            nvtx_label("phase13", "case", case="tp"),
+            enabled=config.enable_nvtx,
+        ):
+            tp_case = _run_tp_case(config, writer)
+        with nvtx_range(
+            nvtx_label("phase13", "case", case="pp"),
+            enabled=config.enable_nvtx,
+        ):
+            pp_case = _run_pp_case(config, writer)
+        with nvtx_range(
+            nvtx_label("phase13", "case", case="ep"),
+            enabled=config.enable_nvtx,
+        ):
+            ep_case = _run_ep_case(config, writer)
         end_ns = time.monotonic_ns()
         summary = {
             "run_id": run_id,

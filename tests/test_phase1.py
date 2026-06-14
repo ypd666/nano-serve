@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from nano_serve.assets import load_dotenv
 from nano_serve.engine import Engine, EngineConfig
 from nano_serve.engine.batch import BatchKind, BatchPlan
+from nano_serve.engine.config import BenchmarkConfig
 from nano_serve.kv_cache.contiguous import ContiguousKVCache, ContiguousKVCacheConfig
 from nano_serve.model import HuggingFaceOracle, TokenizerWrapper
 from nano_serve.model.loader import ModelLoader, ModelSpec
@@ -40,7 +42,12 @@ def test_tokenizer_wrapper_roundtrip() -> None:
 
 
 def test_engine_generate_uses_full_context_greedy_runner() -> None:
-    engine = Engine(EngineConfig(model_path="unused"))
+    engine = Engine(
+        EngineConfig(
+            model_path="unused",
+            benchmark=BenchmarkConfig(enable_nvtx=True),
+        )
+    )
     engine.model_runner = _FakeRunner([7, 8, 9])
     stream_events = []
     phase_events = []
@@ -77,7 +84,12 @@ def test_engine_generate_uses_full_context_greedy_runner() -> None:
 
 
 def test_engine_generate_uses_top_k_sampler_when_requested() -> None:
-    engine = Engine(EngineConfig(model_path="unused"))
+    engine = Engine(
+        EngineConfig(
+            model_path="unused",
+            benchmark=BenchmarkConfig(enable_nvtx=True),
+        )
+    )
     engine.model_runner = _FixedLogitsRunner([[1.0, 3.0, 2.0]])
 
     output_token_ids = engine.generate(
@@ -86,6 +98,62 @@ def test_engine_generate_uses_top_k_sampler_when_requested() -> None:
     )
 
     assert output_token_ids == [1]
+
+
+def test_engine_generate_emits_nvtx_stage_ranges(monkeypatch) -> None:
+    ranges: list[tuple[str, bool]] = []
+
+    @contextmanager
+    def fake_nvtx_range(name: str, *, enabled: bool = True):
+        ranges.append((name, enabled))
+        yield
+
+    monkeypatch.setattr("nano_serve.engine.core.nvtx_range", fake_nvtx_range)
+    engine = Engine(
+        EngineConfig(
+            model_path="unused",
+            benchmark=BenchmarkConfig(enable_nvtx=True),
+        )
+    )
+    engine.model_runner = _FakeRunner([7])
+
+    output_token_ids = engine.generate(
+        [1, 2, 3],
+        SamplingParams(max_tokens=1, stop_token_ids=(9,)),
+    )
+
+    assert output_token_ids == [7]
+    names = [name for name, _ in ranges]
+    assert any(name.startswith("nano_serve.prefill.single") for name in names)
+    assert "nano_serve.sample" in names
+    assert all(enabled for _, enabled in ranges)
+
+
+def test_engine_nvtx_can_be_disabled(monkeypatch) -> None:
+    ranges: list[tuple[str, bool]] = []
+
+    @contextmanager
+    def fake_nvtx_range(name: str, *, enabled: bool = True):
+        ranges.append((name, enabled))
+        yield
+
+    monkeypatch.setattr("nano_serve.engine.core.nvtx_range", fake_nvtx_range)
+    engine = Engine(
+        EngineConfig(
+            model_path="unused",
+            benchmark=BenchmarkConfig(enable_nvtx=False),
+        )
+    )
+    engine.model_runner = _FakeRunner([7])
+
+    output_token_ids = engine.generate(
+        [1, 2, 3],
+        SamplingParams(max_tokens=1, stop_token_ids=(9,)),
+    )
+
+    assert output_token_ids == [7]
+    assert ranges
+    assert all(not enabled for _, enabled in ranges)
 
 
 def test_qwen35_cached_decode_matches_full_context_small_model() -> None:

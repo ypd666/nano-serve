@@ -12,8 +12,9 @@ from pathlib import Path
 
 from nano_serve.assets import AssetConfig
 from nano_serve.benchmark.datasets import load_sharegpt_dataset
+from nano_serve.benchmark.profiler import nvtx_label, nvtx_range
 from nano_serve.benchmark.report import write_markdown_report
-from nano_serve.engine.config import EngineConfig
+from nano_serve.engine.config import BenchmarkConfig, EngineConfig
 from nano_serve.observability import Event, JSONLEventWriter, platform_event
 from nano_serve.platform import detect_platform
 
@@ -27,6 +28,7 @@ class Phase0SmokeConfig:
     num_samples: int = 8
     load_model: bool = False
     workload: str = "phase0_smoke"
+    enable_nvtx: bool = False
 
 
 def run_phase0_smoke(config: Phase0SmokeConfig) -> dict[str, object]:
@@ -40,12 +42,13 @@ def run_phase0_smoke(config: Phase0SmokeConfig) -> dict[str, object]:
     report_path = run_dir / "report.md"
 
     platform_info = detect_platform()
-    engine_config = EngineConfig()
+    engine_config = EngineConfig(benchmark=BenchmarkConfig(enable_nvtx=config.enable_nvtx))
     run_config = {
         "run_id": run_id,
         "workload": config.workload,
         "num_samples": config.num_samples,
         "load_model": config.load_model,
+        "enable_nvtx": config.enable_nvtx,
         "command": " ".join(sys.argv),
         "git_commit": _git_commit(),
         "engine_config": engine_config.to_dict(),
@@ -69,11 +72,15 @@ def run_phase0_smoke(config: Phase0SmokeConfig) -> dict[str, object]:
     model_checked = False
     model_loaded = False
     model_error: str | None = None
-    with JSONLEventWriter(events_path) as writer:
+    with (
+        JSONLEventWriter(events_path) as writer,
+        nvtx_range(nvtx_label("phase0", "run"), enabled=config.enable_nvtx),
+    ):
         writer.write(Event("run_start", fields={"run_id": run_id, "workload": config.workload}))
         writer.write(platform_event(platform_info))
 
-        model_files = _check_model_assets(asset_config.model_path)
+        with nvtx_range(nvtx_label("phase0", "asset_check"), enabled=config.enable_nvtx):
+            model_files = _check_model_assets(asset_config.model_path)
         model_checked = True
         writer.write(
             Event(
@@ -88,7 +95,11 @@ def run_phase0_smoke(config: Phase0SmokeConfig) -> dict[str, object]:
         LOGGER.info("checked model assets path=%s files=%s", asset_config.model_path, len(model_files))
 
         writer.write(Event("dataset_load_start", fields={"path": asset_config.dataset_path}))
-        dataset = load_sharegpt_dataset(asset_config.dataset_path, max_samples=config.num_samples)
+        with nvtx_range(nvtx_label("phase0", "dataset_load"), enabled=config.enable_nvtx):
+            dataset = load_sharegpt_dataset(
+                asset_config.dataset_path,
+                max_samples=config.num_samples,
+            )
         writer.write(
             Event(
                 "dataset_load_end",
@@ -122,7 +133,8 @@ def run_phase0_smoke(config: Phase0SmokeConfig) -> dict[str, object]:
         if config.load_model:
             writer.write(Event("model_load_start", fields={"path": asset_config.model_path}))
             try:
-                _load_qwen_model(asset_config.model_path)
+                with nvtx_range(nvtx_label("phase0", "model_load"), enabled=config.enable_nvtx):
+                    _load_qwen_model(asset_config.model_path)
                 model_loaded = True
                 writer.write(Event("model_load_end", fields={"loaded": True}))
                 LOGGER.info("loaded model path=%s", asset_config.model_path)

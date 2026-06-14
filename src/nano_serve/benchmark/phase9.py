@@ -10,8 +10,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from nano_serve.benchmark.profiler import nvtx_label, nvtx_range
 from nano_serve.benchmark.report import write_markdown_report
-from nano_serve.engine.config import EngineConfig
+from nano_serve.engine.config import BenchmarkConfig, EngineConfig
 from nano_serve.kv_cache.paged import PagedKVCache
 from nano_serve.kv_cache.prefix_cache import PrefixCache, PrefixCacheEntry
 from nano_serve.observability import Event, JSONLEventWriter, platform_event
@@ -28,6 +29,7 @@ class Phase9PrefixCacheBenchmarkConfig:
     cache_blocks: int = 4096
     max_prefix_entries: int | None = None
     prefill_token_time_ms: float = 0.02
+    enable_nvtx: bool = False
 
 
 def run_phase9_prefix_cache_benchmark(
@@ -45,6 +47,7 @@ def run_phase9_prefix_cache_benchmark(
     engine_config = EngineConfig(
         kv_cache="paged_prefix",
         block_size=config.block_size,
+        benchmark=BenchmarkConfig(enable_nvtx=config.enable_nvtx),
     )
     run_config = {
         "run_id": run_id,
@@ -58,17 +61,29 @@ def run_phase9_prefix_cache_benchmark(
         "cache_blocks": config.cache_blocks,
         "max_prefix_entries": config.max_prefix_entries,
         "prefill_token_time_ms": config.prefill_token_time_ms,
+        "enable_nvtx": config.enable_nvtx,
         "engine_config": engine_config.to_dict(),
         "platform": platform_info.to_dict(),
     }
     run_config_path.write_text(json.dumps(run_config, indent=2, sort_keys=True), encoding="utf-8")
 
     start_ns = time.monotonic_ns()
-    with JSONLEventWriter(events_path) as writer:
+    with (
+        JSONLEventWriter(events_path) as writer,
+        nvtx_range(nvtx_label("phase9", "run"), enabled=config.enable_nvtx),
+    ):
         writer.write(Event("run_start", fields={"run_id": run_id, "phase": "phase9"}))
         writer.write(platform_event(platform_info))
-        paged_case = _run_case(config, use_prefix_cache=False, writer=writer)
-        prefix_case = _run_case(config, use_prefix_cache=True, writer=writer)
+        with nvtx_range(
+            nvtx_label("phase9", "case", kv_cache="paged"),
+            enabled=config.enable_nvtx,
+        ):
+            paged_case = _run_case(config, use_prefix_cache=False, writer=writer)
+        with nvtx_range(
+            nvtx_label("phase9", "case", kv_cache="paged_prefix"),
+            enabled=config.enable_nvtx,
+        ):
+            prefix_case = _run_case(config, use_prefix_cache=True, writer=writer)
         for case in (paged_case, prefix_case):
             writer.write(Event("prefix_cache_case", fields=case))
         end_ns = time.monotonic_ns()
